@@ -1,0 +1,53 @@
+name: release
+
+# Tag and push to cut a release:
+#   npm version 0.2.0 --no-git-tag-version && git commit -am 'v0.2.0' && git tag v0.2.0 && git push --follow-tags
+# scripts/release.sh does the same thing from a laptop; this builds it in CI.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build and release'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Check the tag matches package.json
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="v$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "tag $TAG does not match package.json $VERSION" >&2
+            exit 1
+          fi
+      - run: npm run package
+      - name: Upload the artifacts to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release/* --clobber
+          else
+            gh release create "$TAG" release/* --title "token-harness $TAG" --generate-notes
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: release/

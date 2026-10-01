@@ -1,7 +1,7 @@
 # Usage
 
 A token-saving harness for coding agents, built from the analysis of 2,128 local Codex sessions
-(see [DESIGN.md](DESIGN.md)). Three layers, usable independently:
+(see [DESIGN.md](DESIGN.md)). Each layer is usable on its own:
 
 | layer | what it does | entry |
 |---|---|---|
@@ -9,6 +9,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 | **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `th-proxy` |
 | **harness** | own agent loop: per-turn rebuild (fixed prompt + state digest + folded window), blocking `run`/`wait` instead of polling, read cache, `delegate` to cheaper models with escalation, session **fork / merge / discard**, map-reduce with fresh contexts | `th` |
 | **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `th-sidecar` |
+| **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `th-dash` |
 | **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `th login`, `th config` |
 
 ## Install
@@ -16,7 +17,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 28 tests: core, harness loop (mock model), proxy, upstream (OAuth/transport, chat adapter), sidecar
+npm test                                  # 32 tests: core, harness loop (mock model), proxy, upstream (OAuth/transport, chat adapter), sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
@@ -126,6 +127,68 @@ npx tsx src/bench/replay.ts file1.jsonl file2.jsonl --profile long_task --knob.w
 
 It rebuilds every request of a recorded Codex session, runs it through `rewrite()` with persistent state, simulates the prefix cache as the common item-prefix with the previous request (cold after `cache_ttl_estimate_s` idle), and reports raw tokens and cost-equivalent (cached ×0.1, output ×8). The estimator is calibrated against the measured `input_tokens` (ratio 0.99 on the 30-session sample).
 
+## 5. Live dashboard
+
+```bash
+npx tsx src/dashboard/cli.ts                      # http://127.0.0.1:8792
+npx tsx src/dashboard/cli.ts --open --weekly-budget 50M
+npx tsx src/dashboard/cli.ts --once | jq .totals  # one JSON snapshot, then exit
+```
+
+| flag | meaning |
+|---|---|
+| `--port 8792` / `--host 127.0.0.1` | where to listen |
+| `--ledger PATH` | a ledger other than `~/.token_harness/ledger.jsonl` (e.g. one copied off a server) |
+| `--weekly-budget 50M` | draws the quota gauge; accepts `50000000`, `50M`, `1.5B`, or `TH_WEEKLY_BUDGET` |
+| `--poll-ms 1000` | how often to re-check the ledger (it also watches the directory) |
+| `--open` | open a browser at the dashboard |
+| `--once` | print a JSON snapshot and exit — for scripts, CI and regression checks |
+| `--quiet` | no banner on stdout |
+
+Endpoints: `/` (the page), `/api/snapshot` (JSON), `/api/stream` (SSE, one frame per change,
+throttled, with a 10s heartbeat), `/healthz`.
+
+What it shows
+- **quota stretch** — what the unmodified client would have paid divided by what was paid. The
+  baseline prices the tokens the rewrite removed (`ctx_before − ctx_after`) at the uncached rate
+  and leaves the rest of the row as billed, which is the conservative reading.
+- **tokens not sent**, **cost-equivalent saved**, **cache hit**, **output tokens**, sessions and
+  how many are active (a session is active if it wrote a ledger row in the last 120s).
+- **context per step** — the two curves per session: what the client wanted to send vs what
+  actually went out. The gap is the product.
+- **sessions** — steps, would-send vs sent, ratio, cache share, folds, recalls, idle time. Click
+  a row to chart it.
+- **savings feed** — every `compact` / `shape` / `dedupe` / `poll_collapse` / `wait` / `recall` /
+  `delegate` / `fork` / `merge` / `knob_change` event with the tokens it removed.
+- **where the savings came from** — the same events as a ranked breakdown.
+
+It only ever reads the ledger: run it next to the proxy, the harness and `th-sidecar watch`
+without interference. The tailer reads just the appended bytes, holds back half-written lines,
+and re-reads from the start if the ledger is truncated or rotated.
+
+## 6. Build and release
+
+```bash
+npm run build                    # tsc → dist/ (the th* commands prefer dist/ when it exists)
+npm run package                  # typecheck + test + build + tarballs into release/
+SKIP_TESTS=1 npm run package     # when CI already ran them
+npm run release -- --dry-run     # show the tag, artifacts and notes; change nothing
+npm run release -- 0.2.0         # bump, tag, push, create the GitHub release, upload
+```
+
+`npm run package` produces `release/token-harness-<v>.tgz` (npm-installable),
+`release/token-harness-<v>-standalone.tar.gz` (compiled `dist/` plus the installed runtime
+dependency tree — plain `node`, no npm install, no network) and `release/SHA256SUMS.txt`. The
+staged standalone tree is smoke-tested with plain node before being tarred.
+
+`bin/_launch.js` runs `dist/` when present and falls back to `tsx` on `src/` otherwise, so the
+same `bin/th*` entry points work in a source checkout and in a release tarball.
+
+CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (typecheck + test + build on Node
+20/22/24), [`.github/workflows/release.yml`](../.github/workflows/release.yml) (on a `v*` tag:
+verifies the tag matches `package.json`, packages, and attaches the artifacts to the release;
+also runnable by hand with `workflow_dispatch` for an existing tag).
+
 ## Layout
 
 ```
@@ -133,11 +196,14 @@ src/core      items, tokens, artifacts, shapers, knobs, ledger, cache_state, jud
 src/proxy     server (Responses proxy + recall), cli
 src/harness   providers (OpenAI Responses / Anthropic), tools, session (DAG, fork/merge), router, loop, cli
 src/sidecar   metrics, tuner, cli
+src/dashboard live (ledger fold + tailer), ui (the page), server (SSE), cli
 src/upstream  config (provider resolution), codex_auth (OAuth PKCE login, refresh, credential files), codex (transport), chat (Responses ⇄ Chat Completions adapter), sse (collector), login_cli
 bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: compression off vs on, same model, judged with hidden tests
 src/bench     replay
 bench/        codex_session_stats.py (the analysis that produced DESIGN.md §2)
 test/         node:test suites with a mock Responses server
+scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
+.github/      ci and release workflows
 ```
 
 Data lives under `~/.token_harness/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `proxy/sessions/`, `harness/sessions/`, `sidecar/`). Override with `TOKEN_HARNESS_HOME`.

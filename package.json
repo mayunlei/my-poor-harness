@@ -1,14 +1,26 @@
 {
   "name": "token-harness",
   "version": "0.1.0",
-  "description": "Token-saving harness for coding agents: context rewrite core, Responses API proxy, agent loop with fork/merge, sidecar tuner.",
+  "description": "Token-saving harness for coding agents: context rewrite core, Responses API proxy, agent loop with fork/merge, sidecar tuner, live dashboard.",
   "private": true,
   "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.11"
+  },
   "bin": {
     "th": "bin/th.js",
     "th-proxy": "bin/th-proxy.js",
-    "th-sidecar": "bin/th-sidecar.js"
+    "th-sidecar": "bin/th-sidecar.js",
+    "th-dash": "bin/th-dash.js"
   },
+  "files": [
+    "bin",
+    "dist",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
@@ -16,7 +28,11 @@
     "proxy": "tsx src/proxy/cli.ts",
     "harness": "tsx src/harness/cli.ts",
     "sidecar": "tsx src/sidecar/cli.ts",
-    "bench:replay": "tsx src/bench/replay.ts"
+    "dash": "tsx src/dashboard/cli.ts",
+    "bench:replay": "tsx src/bench/replay.ts",
+    "package": "bash scripts/package.sh",
+    "release": "bash scripts/release.sh",
+    "clean": "rm -rf dist release"
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21"
