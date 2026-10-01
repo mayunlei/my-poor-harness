@@ -9,10 +9,10 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync, statSync, existsSync, mkdirSync, appendFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, join } from "node:path";
 import { ArtifactStore } from "../core/artifacts.js";
 import { shapeOutput } from "../core/shapers.js";
-import { shaperKnobs, type Knobs } from "../core/knobs.js";
+import { shaperKnobs, harnessHome, type Knobs } from "../core/knobs.js";
 import { countTokens } from "../core/tokens.js";
 import { sha1 } from "../core/items.js";
 import type { ToolDef } from "./providers.js";
@@ -40,7 +40,8 @@ export const TOOL_DEFS: ToolDef[] = [
   { name: "state_update", description: "Record durable notes for the task state (decisions, facts with artifact ids, open questions, next step). Keep under 300 tokens; this replaces earlier notes.", parameters: { type: "object", properties: { notes: { type: "string" } }, required: ["notes"] } },
 ];
 
-function jobsDir(ctx: ToolContext): string { const d = resolve(ctx.cwd, ".token_harness_jobs"); mkdirSync(d, { recursive: true }); return d; }
+/** job logs live under the harness home, never inside the user's repository */
+function jobsDir(_ctx: ToolContext): string { const d = join(harnessHome(), "jobs"); mkdirSync(d, { recursive: true }); return d; }
 
 export function startJob(ctx: ToolContext, cmd: string, cwd: string): Job {
   const id = "job_" + sha1(cmd + Date.now()).slice(0, 6);

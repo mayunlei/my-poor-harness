@@ -300,6 +300,15 @@ def main() -> int:
         with lock_guard:
             lk = repo_locks.setdefault(repo_key, threading.Lock())
         t1 = time.time()
+        # like the official SWE-bench harness: files touched by the hidden test patch are reset to the
+        # base version first, so solver edits to those tests cannot block the test patch
+        tp = json.loads((adir / "case_meta.json").read_text()).get("test_patch", "")
+        tfiles = sorted(set(re.findall(r"^\+\+\+ b/(\S+)", tp, re.M)) | set(re.findall(r"^--- a/(\S+)", tp, re.M)))
+        for tf in tfiles:
+            if subprocess.run(["git", "cat-file", "-e", f"HEAD:{tf}"], cwd=str(ws), capture_output=True).returncode == 0:
+                subprocess.run(["git", "checkout", "HEAD", "--", tf], cwd=str(ws), capture_output=True)
+            elif (ws / tf).exists():
+                (ws / tf).unlink()
         with lk:
             try:
                 ev = subprocess.run([sys.executable, str(AGENTIC / "scripts" / "evaluate_codex_subagent_case.py"), "--case-root", str(adir), "--env-root", str(eval_env_root)],
