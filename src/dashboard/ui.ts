@@ -113,6 +113,7 @@ export const UI_HTML = String.raw`<!doctype html>
     </div>
   </div>
   <p><code id="ledger"></code></p>
+  <p><code>credits come from the upstream's own meter, which is eventually consistent and shared across your devices: totals are sound, a single row is not.</code></p>
 </main>
 <script>
 const fmt = (n) => { n = n || 0; const a = Math.abs(n);
@@ -127,15 +128,23 @@ let selected = null, latest = null;
 
 function kpis(t, snap) {
   const active = snap.sessions.filter(s => s.active).length;
-  const cards = [
-    { cls: "hero", label: "quota stretch", value: "×" + (t.multiplier||1).toFixed(2),
+  const cards = [];
+  // when the upstream meters credits, real money leads
+  if (t.creditsSpent > 0) cards.push({
+    label: "credits spent",
+    value: t.creditsSpent < 100 ? t.creditsSpent.toFixed(3) : fmt(t.creditsSpent),
+    sub: (t.creditsBalance != null ? fmt(t.creditsBalance) + " left" : "balance unknown") +
+         (t.creditsPerMillionIn ? " \u00b7 " + t.creditsPerMillionIn.toFixed(1) + " per 1M in" : ""),
+  });
+  cards.push(
+    { cls: "hero", label: "quota stretch", value: "\u00d7" + (t.multiplier||1).toFixed(2),
       sub: "same work, " + (t.multiplier>1 ? (100 - 100/t.multiplier).toFixed(0)+"% less paid for" : "no data yet") },
-    { label: "tokens not sent", value: fmt(t.savedTokens), sub: fmt(t.ctxBefore) + " wanted → " + fmt(t.ctxAfter) + " sent" },
+    { label: "tokens not sent", value: fmt(t.savedTokens), sub: fmt(t.ctxBefore) + " wanted \u2192 " + fmt(t.ctxAfter) + " sent" },
     { label: "cost-equivalent saved", value: fmt(t.savedCost), sub: "paid " + fmt(t.cost) + " of " + fmt(t.baseline) },
     { label: "cache hit", value: pct(t.cacheHitRate), sub: fmt(t.cached) + " cached / " + fmt(t.input) + " in" },
     { label: "output tokens", value: fmt(t.output), sub: t.responses + " responses, " + t.turns + " turns" },
     { label: "sessions", value: String(t.sessions), sub: active + " active now" },
-  ];
+  );
   document.getElementById("kpis").innerHTML = cards.map(c =>
     '<div class="kpi ' + (c.cls||"") + '"><div class="label">' + c.label + '</div><div class="value">' + c.value + '</div><div class="sub">' + esc(c.sub) + '</div></div>').join("");
 }
@@ -177,14 +186,16 @@ function chart(s) {
 function sessions(list) {
   const el = document.getElementById("sessions");
   if (!list.length) { el.innerHTML = '<div class="empty">no sessions in the ledger yet</div>'; return; }
-  el.innerHTML = '<table><thead><tr><th>session</th><th>model</th><th>steps</th><th>would send</th><th>sent</th><th>×</th><th>cached</th><th>folds</th><th>recalls</th><th>last</th></tr></thead><tbody>' +
+  el.innerHTML = '<table><thead><tr><th>session</th><th>model</th><th>steps</th><th>would send</th><th>sent</th><th>×</th><th>cached</th><th>folds</th><th>recalls</th><th>credits</th><th>last</th></tr></thead><tbody>' +
     list.map(s => { const mult = s.ctxAfter ? s.ctxBefore / s.ctxAfter : 1;
       const folds = (s.events.compact||0) + (s.events.shape||0) + (s.events.dedupe||0) + (s.events.poll_collapse||0);
       return '<tr data-sid="' + esc(s.session) + '" class="' + (s.session === selected ? "sel" : "") + '">' +
         '<td><span class="sid" title="' + esc(s.session) + '">' + (s.active ? '<span class="live-badge">●</span> ' : '') + esc(shortSid(s.session)) + '</span></td>' +
         '<td>' + esc(s.model || "-") + '</td><td>' + s.responses + '</td><td>' + fmt(s.ctxBefore) + '</td><td>' + fmt(s.ctxAfter) + '</td>' +
         '<td class="' + (mult > 1.05 ? "gain" : "") + '">' + mult.toFixed(2) + '</td><td>' + pct(s.input ? s.cached/s.input : 0) + '</td>' +
-        '<td>' + folds + '</td><td>' + s.recalls + '</td><td class="' + (s.active ? "live-badge" : "idle-badge") + '">' + ago(s.idleS) + '</td></tr>'; }).join("") + '</tbody></table>';
+        '<td>' + folds + '</td><td>' + s.recalls + '</td>' +
+        '<td>' + (s.creditsSpent ? (s.creditsSpent < 100 ? s.creditsSpent.toFixed(2) : fmt(s.creditsSpent)) : "-") + '</td>' +
+        '<td class="' + (s.active ? "live-badge" : "idle-badge") + '">' + ago(s.idleS) + '</td></tr>'; }).join("") + '</tbody></table>';
   el.querySelectorAll("tr[data-sid]").forEach(tr => tr.onclick = () => { selected = tr.dataset.sid; render(latest); });
 }
 
@@ -193,13 +204,15 @@ function strategies(list) {
   if (!list || !list.length) { p.hidden = true; return; }
   p.hidden = false;
   document.getElementById("strategies").innerHTML =
-    '<table><thead><tr><th>strategy</th><th>runs</th><th>pass</th><th>calls</th><th>cost-equiv</th><th>per pass</th><th>phases</th></tr></thead><tbody>' +
+    '<table><thead><tr><th>strategy</th><th>runs</th><th>pass</th><th>calls</th><th>cost-equiv</th><th>per pass</th><th>credits</th><th>cr/pass</th><th>phases</th></tr></thead><tbody>' +
     list.map(s => {
       const ph = Object.entries(s.phases || {}).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + " " + v).join(", ");
       return '<tr><td>' + esc(s.strategy) + '</td><td>' + (s.runs || 0) + '</td>' +
         '<td class="' + (s.runs && s.passed === s.runs ? "gain" : s.runs ? "" : "idle-badge") + '">' + (s.runs ? s.passed + "/" + s.runs : "-") + '</td>' +
         '<td>' + s.responses + '</td><td>' + fmt(s.cost) + '</td>' +
         '<td>' + (s.costPerPass ? fmt(s.costPerPass) : "-") + '</td>' +
+        '<td>' + (s.creditsSpent ? s.creditsSpent.toFixed(2) : "-") + '</td>' +
+        '<td>' + (s.creditsPerPass ? s.creditsPerPass.toFixed(2) : "-") + '</td>' +
         '<td style="text-align:left;color:var(--dim)">' + esc(ph) + '</td></tr>';
     }).join("") + '</tbody></table>';
 }

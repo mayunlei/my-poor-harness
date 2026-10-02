@@ -35,6 +35,12 @@ export interface LiveSession {
   input: number; cached: number; uncached: number; output: number;
   cost: number;            // cost-equivalent actually paid
   baseline: number;        // cost-equivalent the unmodified client would have paid
+  /** real money: summed balance drops seen on this session's responses. The meter is
+   *  eventually consistent and the pool is shared, so this is the best available
+   *  attribution, not an invoice. */
+  creditsSpent: number;
+  /** the most recent balance the backend reported, i.e. what is left */
+  creditsBalance?: number;
   ctxBefore: number; ctxAfter: number;
   events: Record<string, number>;
   recalls: number;
@@ -51,6 +57,10 @@ export interface LiveTotals {
   ctxBefore: number; ctxAfter: number;
   cacheHitRate: number;
   savedTokens: number; savedCost: number; multiplier: number;
+  /** real money, when the upstream reports a credits meter */
+  creditsSpent: number;
+  creditsBalance?: number;
+  creditsPerMillionIn?: number;
 }
 
 export interface StrategyStats {
@@ -59,10 +69,13 @@ export interface StrategyStats {
   responses: number;
   input: number; cached: number; output: number;
   cost: number; baseline: number;
+  /** real money this strategy burned, when the upstream meters credits */
+  creditsSpent: number;
   /** completed runs, from the strategy's own rollup rows */
   runs: number; passed: number;
   phases: Record<string, number>;
   costPerPass?: number;
+  creditsPerPass?: number;
 }
 
 export interface LiveSnapshot {
@@ -113,13 +126,15 @@ export class LiveState {
       s = {
         session: r.session, source: r.source, model: r.model, firstTs: r.ts, lastTs: r.ts,
         responses: 0, turns: 0, lastStep: 0,
-        input: 0, cached: 0, uncached: 0, output: 0, cost: 0, baseline: 0, ctxBefore: 0, ctxAfter: 0,
+        input: 0, cached: 0, uncached: 0, output: 0, cost: 0, baseline: 0, creditsSpent: 0, ctxBefore: 0, ctxAfter: 0,
         events: {}, recalls: 0, outcome: { success: 0, fail: 0, unknown: 0 },
         series: [], active: false, idleS: 0,
       };
       this.sessions.set(r.session, s);
     }
     if (r.ts > s.lastTs) s.lastTs = r.ts;
+    if (r.credits_spent) s.creditsSpent += r.credits_spent;
+    if (r.credits_balance !== undefined) s.creditsBalance = r.credits_balance;
     if (r.model) s.model = r.model;
     s.turns = Math.max(s.turns, (r.turn ?? 0) + 1);
     s.lastStep = Math.max(s.lastStep, r.step ?? 0);
@@ -142,7 +157,8 @@ export class LiveState {
     const sname = (r.extra as any)?.strategy;
     if (typeof sname === "string" && sname) {
       let st = this.strategies.get(sname);
-      if (!st) { st = { strategy: sname, responses: 0, input: 0, cached: 0, output: 0, cost: 0, baseline: 0, runs: 0, passed: 0, phases: {} }; this.strategies.set(sname, st); }
+      if (!st) { st = { strategy: sname, responses: 0, input: 0, cached: 0, output: 0, cost: 0, baseline: 0, creditsSpent: 0, runs: 0, passed: 0, phases: {} }; this.strategies.set(sname, st); }
+      if (r.credits_spent) st.creditsSpent += r.credits_spent;
       if (counted) {
         st.responses++; st.input += r.input ?? 0; st.cached += r.cached ?? 0; st.output += r.output ?? 0;
         st.cost += r.cost_equiv ?? costEquiv(r); st.baseline += rowBaseline(r);
@@ -164,11 +180,12 @@ export class LiveState {
     const totals: LiveTotals = {
       responses: 0, sessions: this.sessions.size, turns: 0,
       input: 0, cached: 0, uncached: 0, output: 0, cost: 0, baseline: 0, ctxBefore: 0, ctxAfter: 0,
-      cacheHitRate: 0, savedTokens: 0, savedCost: 0, multiplier: 1,
+      cacheHitRate: 0, savedTokens: 0, savedCost: 0, multiplier: 1, creditsSpent: 0,
     };
     const byModel: LiveSnapshot["byModel"] = {};
     const byEvent: Record<string, number> = {};
     const sessions: LiveSession[] = [];
+    let latestBalanceAt: string | undefined;
 
     for (const s of this.sessions.values()) {
       const idleS = Math.max(0, (nowMs - Date.parse(s.lastTs)) / 1000);
@@ -178,6 +195,9 @@ export class LiveState {
       totals.input += s.input; totals.cached += s.cached; totals.uncached += s.uncached; totals.output += s.output;
       totals.cost += s.cost; totals.baseline += s.baseline;
       totals.ctxBefore += s.ctxBefore; totals.ctxAfter += s.ctxAfter;
+      totals.creditsSpent += s.creditsSpent;
+      // the freshest balance across sessions is what is actually left
+      if (s.creditsBalance !== undefined && (latestBalanceAt === undefined || s.lastTs > latestBalanceAt)) { latestBalanceAt = s.lastTs; totals.creditsBalance = s.creditsBalance; }
       const m = s.model ?? "unknown";
       byModel[m] ??= { responses: 0, input: 0, output: 0, cost: 0 };
       byModel[m].responses += s.responses; byModel[m].input += s.input; byModel[m].output += s.output; byModel[m].cost += s.cost;
@@ -188,6 +208,7 @@ export class LiveState {
     totals.savedTokens = Math.max(0, totals.ctxBefore - totals.ctxAfter);
     totals.savedCost = Math.max(0, totals.baseline - totals.cost);
     totals.multiplier = totals.cost > 0 ? totals.baseline / totals.cost : 1;
+    if (totals.creditsSpent > 0 && totals.input > 0) totals.creditsPerMillionIn = totals.creditsSpent / (totals.input / 1e6);
 
     sessions.sort((a, b) => b.lastTs.localeCompare(a.lastTs));
 
@@ -201,7 +222,7 @@ export class LiveState {
       feed: [...this.feed].reverse(),
       byModel, byEvent,
       byStrategy: [...this.strategies.values()]
-        .map((st) => ({ ...st, costPerPass: st.passed ? st.cost / st.passed : undefined }))
+        .map((st) => ({ ...st, costPerPass: st.passed ? st.cost / st.passed : undefined, creditsPerPass: st.passed && st.creditsSpent ? st.creditsSpent / st.passed : undefined }))
         .sort((a, b) => b.cost - a.cost),
     };
 

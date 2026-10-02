@@ -19,7 +19,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 51 tests: core, harness loop, strategies, proxy, upstream (OAuth/transport, chat adapter), meter, price, sidecar, dashboard
+npm test                                  # 52 tests: core, harness loop, strategies, proxy, upstream (OAuth/transport, chat adapter), meter, price, sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
@@ -112,7 +112,7 @@ Anthropic models work too (`--model claude-...` with `ANTHROPIC_API_KEY`); the a
 ## 3. Sidecar
 
 ```bash
-npx tsx src/sidecar/cli.ts report            # cost, cache, compaction net effect, judge, delegate pass rates
+npx tsx src/sidecar/cli.ts report            # cost, credits spent and left, cache, compaction net effect, judge, delegate pass rates
 npx tsx src/sidecar/cli.ts tune --dry-run    # what it would change and why
 npx tsx src/sidecar/cli.ts watch --every 900 # report + tune every 15 min
 npx tsx src/sidecar/cli.ts history           # every knob change with who/why/scope
@@ -151,6 +151,11 @@ Endpoints: `/` (the page), `/api/snapshot` (JSON), `/api/stream` (SSE, one frame
 throttled, with a 10s heartbeat), `/healthz`.
 
 What it shows
+- **credits spent** — real money, when the upstream reports a credits meter: the summed
+  balance drops, what is left, and credits per 1M input tokens. Per session and per strategy
+  too, so you can see what a `plan_verify` run actually cost versus a `react` run. The meter
+  is eventually consistent and the pool is shared across your devices, so **the totals are
+  sound and a single row is not** — the page says so, in place.
 - **quota stretch** — what the unmodified client would have paid divided by what was paid. The
   baseline prices the tokens the rewrite removed (`ctx_before − ctx_after`) at the uncached rate
   and leaves the rest of the row as billed, which is the conservative reading.

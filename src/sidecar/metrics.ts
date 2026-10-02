@@ -4,7 +4,11 @@
  */
 import { Ledger, type LedgerRow, costEquiv } from "../core/ledger.js";
 
-export interface Aggregate { rows: number; input: number; cached: number; uncached: number; output: number; cost: number; ctxBefore: number; ctxAfter: number; compactions: number; recalls: number; sessions: number; turns: number }
+export interface Aggregate { rows: number; input: number; cached: number; uncached: number; output: number; cost: number; ctxBefore: number; ctxAfter: number; compactions: number; recalls: number; sessions: number; turns: number;
+  /** real money, when the upstream reports a credits meter: summed balance drops.
+   *  The meter is eventually consistent and the pool is shared across devices, so the
+   *  total is sound and a single row is not. */
+  credits: number; creditsBalance?: number }
 export interface CompactionEffect { session: string; turn: number; step: number; reason?: string; followingSteps: number; savedTokens: number; savedCostEquiv: number; oneTimeCost: number; net: number; recallsAfter: number }
 export interface Report {
   window: { from?: string; to?: string };
@@ -19,12 +23,14 @@ export interface Report {
 }
 
 function agg(rows: LedgerRow[]): Aggregate {
-  const a: Aggregate = { rows: 0, input: 0, cached: 0, uncached: 0, output: 0, cost: 0, ctxBefore: 0, ctxAfter: 0, compactions: 0, recalls: 0, sessions: 0, turns: 0 };
+  const a: Aggregate = { rows: 0, input: 0, cached: 0, uncached: 0, output: 0, cost: 0, ctxBefore: 0, ctxAfter: 0, compactions: 0, recalls: 0, sessions: 0, turns: 0, credits: 0 };
   const sess = new Set<string>(); const turns = new Set<string>();
   for (const r of rows) {
     if (r.input === undefined && r.ctx_after === undefined) continue;
     a.rows++; a.input += r.input ?? 0; a.cached += r.cached ?? 0; a.uncached += r.uncached ?? 0; a.output += r.output ?? 0; a.cost += r.cost_equiv ?? costEquiv(r);
     a.ctxBefore += r.ctx_before ?? 0; a.ctxAfter += r.ctx_after ?? 0; if (r.event === "compact") a.compactions++; a.recalls += r.recall_count ?? 0;
+    a.credits += r.credits_spent ?? 0;
+    if (r.credits_balance !== undefined) a.creditsBalance = r.credits_balance;
     sess.add(r.session); turns.add(r.session + ":" + r.turn);
   }
   a.sessions = sess.size; a.turns = turns.size; return a;
@@ -83,6 +89,8 @@ export function formatReport(r: Report): string {
   L.push(`total: ${r.total.rows} responses, ${r.total.sessions} sessions, ${r.total.turns} turns`);
   L.push(`  input ${f(r.total.input)} (cached ${f(r.total.cached)} = ${(100 * r.total.cached / Math.max(1, r.total.input)).toFixed(0)}%), output ${f(r.total.output)}, cost-equiv ${f(r.total.cost)}`);
   if (r.total.ctxBefore) L.push(`  context: client would send ${f(r.total.ctxBefore)} → sent ${f(r.total.ctxAfter)} (×${(r.total.ctxBefore / Math.max(1, r.total.ctxAfter)).toFixed(2)})`);
+  if (r.total.credits > 0) L.push(`  credits: ${r.total.credits.toFixed(3)} spent${r.total.creditsBalance !== undefined ? `, ${f(r.total.creditsBalance)} left` : ""}` +
+    ` (${(r.total.credits / Math.max(1, r.total.input / 1e6)).toFixed(1)} per 1M input; the meter lags and the pool is shared, so trust the total, not a row)`);
   for (const [src, a] of Object.entries(r.bySource)) L.push(`  ${src}: ${a.rows} rows, cost ${f(a.cost)}, compactions ${a.compactions}, recalls ${a.recalls}`);
   L.push(`cache: ` + Object.entries(r.byCacheState).map(([k, v]) => `${k}=${v.rows} rows/${(100 * v.uncachedShare).toFixed(0)}% uncached`).join("  "));
   L.push(`compactions: ${r.compactions.count}, net ${f(r.compactions.netTotal)} cost-equiv (median ${f(r.compactions.medianNet)}, ${r.compactions.negative} negative)`);

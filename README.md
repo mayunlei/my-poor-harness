@@ -149,7 +149,7 @@ Verify what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                      # 51 tests, no network, no API key
+npm test                      # 52 tests, no network, no API key
 npm run dash -- --open        # live dashboard
 npm run proxy                 # th-proxy on :8791
 npm run bench:replay -- --limit 30 --min-bytes 200000   # offline savings on your own sessions
@@ -182,7 +182,8 @@ The layout, with the headline numbers off a short local run and the lower rows s
 
 It tails `~/.token_harness/ledger.jsonl` and pushes updates over SSE, so numbers move while the
 agent works. **Quota stretch** is the headline: what you would have paid divided by what you
-did pay. Per session you get the context curve (what the client wanted to send vs what actually
+did pay — and when the upstream meters credits, the real spend and remaining balance sit
+beside it. Per session you get the context curve (what the client wanted to send vs what actually
 went out — the gap is the whole point), steps, cache share, folds and recalls; alongside it a
 feed of every fold with its token saving, and a breakdown of which mechanism earned what.
 It is strictly read-only, so it is safe to leave running next to the proxy, the harness and the

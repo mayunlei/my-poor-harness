@@ -82,6 +82,32 @@ test("live state: a row with no token numbers still registers the session and ev
   assert.equal(s.feed.length, 1);
 });
 
+test("live state: credits are summed per session, per strategy and overall; the balance is the freshest one", () => {
+  const st = new LiveState("/tmp/none.jsonl");
+  st.ingest(row({ step: 1, input: 10_000, cached: 0, uncached: 10_000, output: 100, event: "response",
+                  credits_spent: 1.5, credits_balance: 1000.25, extra: { strategy: "plan_verify" } }));
+  st.ingest(row({ step: 2, input: 10_000, cached: 8_000, uncached: 2_000, output: 100, event: "response",
+                  credits_spent: 0, credits_balance: 1000.25, extra: { strategy: "plan_verify" } }));   // the meter lags: no drop
+  st.ingest(row({ step: 3, input: 10_000, cached: 8_000, uncached: 2_000, output: 100, event: "response",
+                  credits_spent: 2.25, credits_balance: 998.0, extra: { strategy: "plan_verify" } }));  // then a lump
+  st.ingest(row({ step: 3, event: "strategy", task_outcome: "success", extra: { strategy: "plan_verify" } }));
+  st.ingest(row({ session: "s2", step: 1, input: 5_000, cached: 0, uncached: 5_000, output: 50, event: "response" }));  // no meter at all
+
+  const s = st.snapshot();
+  assert.equal(s.totals.creditsSpent, 3.75, "lagged zeroes and lumps sum correctly");
+  assert.equal(s.totals.creditsBalance, 998.0, "the freshest balance is what is left");
+  assert.ok(s.totals.creditsPerMillionIn && s.totals.creditsPerMillionIn > 0);
+  const s1 = s.sessions.find((x) => x.session === "s1")!;
+  assert.equal(s1.creditsSpent, 3.75);
+  assert.equal(s1.creditsBalance, 998.0);
+  const unmetered = s.sessions.find((x) => x.session === "s2")!;
+  assert.equal(unmetered.creditsSpent, 0);
+  assert.equal(unmetered.creditsBalance, undefined, "an unmetered upstream reports no balance, not zero");
+  const pv = s.byStrategy.find((x) => x.strategy === "plan_verify")!;
+  assert.equal(pv.creditsSpent, 3.75);
+  assert.equal(pv.creditsPerPass, 3.75, "one passing run, so credits per pass is the whole spend");
+});
+
 test("ledger tail: reads only what was appended, tolerates half-written lines and truncation", () => {
   const dir = mkdtempSync(join(tmpdir(), "th-dash-"));
   const p = join(dir, "ledger.jsonl");
