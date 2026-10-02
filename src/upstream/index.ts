@@ -1,5 +1,5 @@
 /**
- * Upstream: one object both the harness model client and th-proxy use to send a
+ * Upstream: one object both the harness model client and mph-proxy use to send a
  * Responses API request. Two providers:
  *   - codex: built-in ChatGPT OAuth reverse proxy (see codex.ts / codex_auth.ts)
  *   - openai_compatible: any /responses endpoint with an optional Bearer key, or a

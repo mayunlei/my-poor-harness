@@ -45,7 +45,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" release/* --clobber
           else
-            gh release create "$TAG" release/* --title "token-harness $TAG" --generate-notes
+            gh release create "$TAG" release/* --title "my-poor-harness $TAG" --generate-notes
           fi
       - uses: actions/upload-artifact@v4
         with:

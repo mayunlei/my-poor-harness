@@ -72,15 +72,15 @@ async function main() {
   await initTokenizer();
   const cwd = resolve(opt("--cwd", process.cwd())!);
   if (cmd === "help" || flag("--help")) {
-    console.log(`th chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]   interactive session with fork/merge
-th run "task" [--session id] [--cwd dir] [--prompt-file f] [--max-steps n]   one-shot turn
-th map --task "..." (--items a,b,c | --items-file f) [--parallel 3]   map-reduce: fresh context per item
-th compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]   same tasks, every strategy, scored by the task's own acceptance command
-th strategies                                         list execution strategies
-th sessions | th fork <id> <name> | th merge <branch> <main> | th discard <id>
-th knobs [--project p] [k=v ...]
-th login | th logout | th whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
-th config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_api=responses|chat] [codex_models=a,b]   show / set ~/.token_harness/config.json`); return;
+    console.log(`mph chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]   interactive session with fork/merge
+mph run "task" [--session id] [--cwd dir] [--prompt-file f] [--max-steps n]   one-shot turn
+mph map --task "..." (--items a,b,c | --items-file f) [--parallel 3]   map-reduce: fresh context per item
+mph compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]   same tasks, every strategy, scored by the task's own acceptance command
+mph strategies                                         list execution strategies
+mph sessions | mph fork <id> <name> | mph merge <branch> <main> | mph discard <id>
+mph knobs [--project p] [k=v ...]
+mph login | mph logout | mph whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
+mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_api=responses|chat] [codex_models=a,b]   show / set ~/.mph/config.json`); return;
   }
   if (cmd === "login") { await runLogin(); return; }
   if (cmd === "logout") { runLogout(); return; }

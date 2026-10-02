@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, msg, call } from "./mock_model.js";
 
-process.env.TOKEN_HARNESS_HOME = mkdtempSync(join(tmpdir(), "th-h-"));
+process.env.MPH_HOME = mkdtempSync(join(tmpdir(), "mph-h-"));
 const { runTurn } = await import("../src/harness/loop.js");
 const { newSession, saveSession, forkSession, mergeSession, loadSession } = await import("../src/harness/session.js");
 const { Router } = await import("../src/harness/router.js");
@@ -15,7 +15,7 @@ const { resolveKnobs } = await import("../src/core/knobs.js");
 const { OpenAIResponsesClient } = await import("../src/harness/providers.js");
 
 test("harness turn: tools run, window folds, next turn rebuilds with digest; fork/merge", async () => {
-  const ws = mkdtempSync(join(tmpdir(), "th-ws-"));
+  const ws = mkdtempSync(join(tmpdir(), "mph-ws-"));
   writeFileSync(join(ws, "a.py"), "def f():\n    return 1\n");
   const mock = await startMock((body, n) => {
     const last = body.input.at(-1);
@@ -29,11 +29,11 @@ test("harness turn: tools run, window folds, next turn rebuilds with digest; for
     if (n === 6) { const texts = body.input.map((x: any) => JSON.stringify(x)); assert.ok(texts.some((t: string) => t.includes("[context digest")), "digest present"); assert.ok(texts.some((t: string) => t.includes("return 2") === false)); return { output: [call("recall", { id: "nope" }, "c8")] }; }
     return { output: [msg("second turn answer")] };
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const knobs = resolveKnobs({ window: 2, main_model: "mock-main" });
-  const ledger = new Ledger(join(process.env.TOKEN_HARNESS_HOME!, "ledger.jsonl"));
+  const ledger = new Ledger(join(process.env.MPH_HOME!, "ledger.jsonl"));
   const router = new Router(knobs, ledger);
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const s = newSession(ws, "t1"); saveSession(s);
   const events: string[] = [];
   const r1 = await runTurn({ session: s, userText: "make f return 2", knobs, store, ledger, router, onEvent: (e) => events.push(e.kind + ":" + e.detail) });

@@ -105,8 +105,24 @@ export function resolveKnobs(...layers: (KnobOverrides | undefined)[]): Knobs {
   return out as Knobs;
 }
 
+/** pre-rename names, kept out of the literals so a rename sweep cannot silently drop them */
+const LEGACY_HOME_ENV = "TOKEN_" + "HARNESS_HOME";
+const LEGACY_HOME_DIR = "." + "token_harness";
+
+/**
+ * Where the ledger, sessions, artifacts, knobs and credentials live.
+ *
+ * The default is ~/.mph, but an existing ~/.token_harness from before the rename
+ * wins: that directory holds the ledger history and the Codex OAuth tokens, and
+ * silently starting a fresh empty one would look like data loss. Nothing is
+ * migrated automatically — `mv ~/.token_harness ~/.mph` if you want the new name.
+ */
 export function harnessHome(): string {
-  return process.env.TOKEN_HARNESS_HOME ?? join(homedir(), ".token_harness");
+  // LEGACY_HOME and the old env var are deliberate: see the comment above.
+  const explicit = process.env.MPH_HOME ?? process.env[LEGACY_HOME_ENV];
+  if (explicit) return explicit;
+  const legacy = join(homedir(), LEGACY_HOME_DIR);
+  return existsSync(legacy) ? legacy : join(homedir(), ".mph");
 }
 
 export interface KnobFile {

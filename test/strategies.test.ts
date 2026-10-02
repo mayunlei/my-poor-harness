@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, msg, call } from "./mock_model.js";
 
-process.env.TOKEN_HARNESS_HOME = mkdtempSync(join(tmpdir(), "th-strat-"));
+process.env.MPH_HOME = mkdtempSync(join(tmpdir(), "mph-strat-"));
 const { strategyFor, STRATEGIES, extractJson } = await import("../src/harness/strategies/index.js");
 const { newSession, saveSession } = await import("../src/harness/session.js");
 const { Router } = await import("../src/harness/router.js");
@@ -24,14 +24,14 @@ const verdict = (v: "pass" | "fail", objections: string[] = [], evidence = "ran 
   msg("```json\n" + JSON.stringify({ verdict: v, objections, evidence }) + "\n```");
 
 function fixture() {
-  const ws = mkdtempSync(join(tmpdir(), "th-ws-"));
+  const ws = mkdtempSync(join(tmpdir(), "mph-ws-"));
   writeFileSync(join(ws, "a.txt"), "one\n");
   return ws;
 }
 const harness = (ws: string, over: any = {}) => {
   const knobs = resolveKnobs({ main_model: "mock-main", mid_model: "mock-mid", window: 3, ...over });
-  const ledger = new Ledger(join(process.env.TOKEN_HARNESS_HOME!, "ledger.jsonl"));
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const ledger = new Ledger(join(process.env.MPH_HOME!, "ledger.jsonl"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const session = newSession(ws, "strat"); saveSession(session);
   return { knobs, ledger, store, session, router: new Router(knobs, ledger) };
 };
@@ -68,7 +68,7 @@ test("plan_verify: plans, runs a cheap worker per step, verifies independently, 
     if (last.includes("YOUR STEP (s2)")) return { output: [call("write_file", { path: "b.txt", content: "b\n" }, "w2")] };
     return { output: [msg("I definitely did it")] };
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const h = harness(ws);
   const events: string[] = [];
   const r = await strategyFor("plan_verify").run({ ...h, userText: "make it work", onEvent: (e) => events.push(e.kind) });
@@ -120,7 +120,7 @@ test("plan_verify: a failing acceptance command sends the worker back, and the v
       return { output: [call("write_file", { path: "a.txt", content: "done\n" }, "x" + workerTries)] };
     return { output: [call("write_file", { path: "a.txt", content: "nope\n" }, "x" + workerTries)] };   // first try misses
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const h = harness(ws, { argue_rounds: 2 });
   const events: string[] = [];
   const r = await strategyFor("plan_verify").run({ ...h, userText: "fix it", onEvent: (e) => events.push(`${e.kind}:${e.detail.slice(0, 40)}`) });
@@ -147,7 +147,7 @@ test("plan_verify: an unusable verdict fails closed, and an exhausted step is re
     if (role === "verifier") return { output: [msg("Looks good to me!")] };      // no json: must not count as a pass
     return { output: [msg("done")] };
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const h = harness(ws, { argue_rounds: 0, replan_limit: 0 });
   const r = await strategyFor("plan_verify").run({ ...h, userText: "go" });
   await mock.close();
@@ -162,7 +162,7 @@ test("plan_verify: an unusable plan falls back to react instead of failing the t
     if (who(body) === "planner") return { output: [msg("I think we should probably just start coding.")] };
     return { output: [msg("react answer")] };
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const h = harness(ws);
   const r = await strategyFor("plan_verify").run({ ...h, userText: "go" });
   await mock.close();
@@ -184,13 +184,13 @@ test("compare: both strategies scored by the task's own oracle, not by their own
     if (text.includes("YOUR STEP (s1)")) return { output: [call("write_file", { path: "ok.txt", content: "x" }, "c1")] };
     return { output: [msg("I'm done, trust me")] };      // react: claims success, creates nothing
   });
-  process.env.TH_OPENAI_BASE_URL = mock.url + "/v1";
+  process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const rep = await compareStrategies({
     tasks: [{ name: "make-ok", prompt: "create ok.txt", acceptance: "test -f ok.txt", cwd: ws }],
     strategies: ["react", "plan_verify"],
     knobs: resolveKnobs({ main_model: "mock-main", mid_model: "mock-mid" }) as any,
-    ledger: new Ledger(join(process.env.TOKEN_HARNESS_HOME!, "ledger.jsonl")),
-    store: new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art")),
+    ledger: new Ledger(join(process.env.MPH_HOME!, "ledger.jsonl")),
+    store: new ArtifactStore(join(process.env.MPH_HOME!, "art")),
     copy: true,
   });
   await mock.close();

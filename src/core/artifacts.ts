@@ -5,7 +5,7 @@
  */
 import { mkdirSync, writeFileSync, readFileSync, existsSync, statSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { homedir } from "node:os";
+import { harnessHome } from "./knobs.js";
 import { sha1 } from "./items.js";
 
 export interface ArtifactMeta {
@@ -20,7 +20,7 @@ export interface ArtifactMeta {
 export class ArtifactStore {
   readonly root: string;
   constructor(root?: string) {
-    this.root = root ?? join(process.env.TOKEN_HARNESS_HOME ?? join(homedir(), ".token_harness"), "artifacts");
+    this.root = root ?? join(harnessHome(), "artifacts");
     mkdirSync(this.root, { recursive: true });
   }
 

@@ -109,7 +109,7 @@ test("live state: credits are summed per session, per strategy and overall; the 
 });
 
 test("ledger tail: reads only what was appended, tolerates half-written lines and truncation", () => {
-  const dir = mkdtempSync(join(tmpdir(), "th-dash-"));
+  const dir = mkdtempSync(join(tmpdir(), "mph-dash-"));
   const p = join(dir, "ledger.jsonl");
   writeFileSync(p, JSON.stringify(row({ step: 1 })) + "\n");
   const tail = new LedgerTail(p);
@@ -131,7 +131,7 @@ test("ledger tail: reads only what was appended, tolerates half-written lines an
 });
 
 test("dashboard server: page, snapshot, SSE, health; picks up appended rows", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "th-dash-srv-"));
+  const dir = mkdtempSync(join(tmpdir(), "mph-dash-srv-"));
   const p = join(dir, "ledger.jsonl");
   writeFileSync(p, JSON.stringify(row({ input: 1000, cached: 0, uncached: 1000, output: 10, ctx_before: 5000, ctx_after: 1000, event: "response" })) + "\n");
 
@@ -140,7 +140,7 @@ test("dashboard server: page, snapshot, SSE, health; picks up appended rows", as
     const page = await fetch(`${dash.url}/`);
     assert.equal(page.status, 200);
     assert.match(page.headers.get("content-type") ?? "", /text\/html/);
-    assert.match(await page.text(), /token-harness live/);
+    assert.match(await page.text(), /my-poor-harness live/);
 
     const snap = await (await fetch(`${dash.url}/api/snapshot`)).json() as any;
     assert.equal(snap.totals.savedTokens, 4000);

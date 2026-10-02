@@ -1,7 +1,7 @@
 /**
  * Built-in Codex (ChatGPT OAuth) upstream: config resolution, credential loading /
  * refresh / persistence, PKCE login against a mock auth server, the transport's
- * headers and SSE aggregation, and th-proxy + harness client going through it.
+ * headers and SSE aggregation, and mph-proxy + harness client going through it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -10,11 +10,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 
-const HOME = mkdtempSync(join(tmpdir(), "th-up-"));
-process.env.TOKEN_HARNESS_HOME = HOME;
+const HOME = mkdtempSync(join(tmpdir(), "mph-up-"));
+process.env.MPH_HOME = HOME;
 const CLI_AUTH = join(HOME, "codex-cli", "auth.json");
-process.env.TH_CODEX_CLI_AUTH = CLI_AUTH;
-delete process.env.TH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.TH_PROVIDER; delete process.env.CODEX_ACCESS_TOKEN;
+process.env.MPH_CODEX_CLI_AUTH = CLI_AUTH;
+delete process.env.MPH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.MPH_PROVIDER; delete process.env.CODEX_ACCESS_TOKEN;
 
 const { resolveUpstream, saveConfigFile } = await import("../src/upstream/config.js");
 const { CodexAuth, loadCredentials, authFilePath, accountIdFromToken } = await import("../src/upstream/codex_auth.js");
@@ -76,10 +76,10 @@ function writeCliAuth(access: string, refresh = "rt-cli") {
 test("upstream config: default codex; env base url → openai_compatible; overrides win; config file respected", () => {
   const env: any = {};
   assert.equal(resolveUpstream({}, env).provider, "codex");
-  assert.equal(resolveUpstream({}, { TH_OPENAI_BASE_URL: "http://x/v1", TH_OPENAI_API_KEY: "k" }).provider, "openai_compatible");
-  assert.equal(resolveUpstream({}, { TH_OPENAI_BASE_URL: "http://x/v1" }).baseUrl, "http://x/v1");
-  assert.equal(resolveUpstream({ provider: "codex" }, { TH_OPENAI_BASE_URL: "http://x/v1" }).provider, "codex");
-  assert.equal(resolveUpstream({ baseUrl: "http://y/v1", apiKey: "z" }, { TH_PROVIDER: "codex" }).apiKey, "z");
+  assert.equal(resolveUpstream({}, { MPH_OPENAI_BASE_URL: "http://x/v1", MPH_OPENAI_API_KEY: "k" }).provider, "openai_compatible");
+  assert.equal(resolveUpstream({}, { MPH_OPENAI_BASE_URL: "http://x/v1" }).baseUrl, "http://x/v1");
+  assert.equal(resolveUpstream({ provider: "codex" }, { MPH_OPENAI_BASE_URL: "http://x/v1" }).provider, "codex");
+  assert.equal(resolveUpstream({ baseUrl: "http://y/v1", apiKey: "z" }, { MPH_PROVIDER: "codex" }).apiKey, "z");
   saveConfigFile({ provider: "openai_compatible", base_url: "http://cfg/v1", api_key: "cfgkey", codex: { models: ["m1"] } });
   const r = resolveUpstream({}, env);
   assert.equal(r.provider, "openai_compatible"); assert.equal(r.baseUrl, "http://cfg/v1"); assert.equal(r.apiKey, "cfgkey"); assert.equal(r.source, "config");
@@ -91,7 +91,7 @@ test("upstream config: default codex; env base url → openai_compatible; overri
 test("codex credentials: reused from the Codex CLI auth file, refreshed before expiry, rotated tokens persisted and synced back", async () => {
   const auth = await mockAuth();
   writeCliAuth(token(30), "rt-cli");            // expires in 30s → within the 60s skew
-  const a = new CodexAuth({ ...process.env, TH_CODEX_AUTH_BASE: auth.url }, { refreshSkewMs: 60_000 });
+  const a = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url }, { refreshSkewMs: 60_000 });
   const c0 = loadCredentials(process.env);
   assert.equal(c0?.source, "codex"); assert.equal(c0?.accountId, ACC);
   const c1 = await a.get();
@@ -103,17 +103,17 @@ test("codex credentials: reused from the Codex CLI auth file, refreshed before e
   const c2 = await a.get(); assert.equal(auth.calls.length, 1); assert.equal(c2.accessToken, c1.accessToken);
   // own file now takes precedence over the CLI file
   assert.equal(loadCredentials(process.env)?.source, "file");
-  // dead refresh token → clear error pointing at `th login`
+  // dead refresh token → clear error pointing at `mph login`
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(-10), refreshToken: "rt-dead", accountId: ACC } }));
-  const b = new CodexAuth({ ...process.env, TH_CODEX_AUTH_BASE: auth.url });
-  await assert.rejects(() => b.get(), /refresh failed.*th login/);
+  const b = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url });
+  await assert.rejects(() => b.get(), /refresh failed.*mph login/);
   await auth.close();
 });
 
 test("codex login: PKCE authorize URL, local callback, code exchange, credentials saved", async () => {
   const auth = await mockAuth();
   const port = 20000 + Math.floor(Math.random() * 20000);
-  const a = new CodexAuth({ ...process.env, TH_CODEX_AUTH_BASE: auth.url, TH_CODEX_CALLBACK_PORT: String(port) });
+  const a = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url, MPH_CODEX_CALLBACK_PORT: String(port) });
   let authUrl = "";
   const creds = await a.login({
     onAuth: (url) => {
@@ -134,7 +134,7 @@ test("codex login: PKCE authorize URL, local callback, code exchange, credential
   assert.equal(creds.refreshToken, "rt-login"); assert.equal(creds.accountId, ACC); assert.equal(creds.source, "file");
   assert.equal(JSON.parse(readFileSync(authFilePath(), "utf8")).credentials.refreshToken, "rt-login");
   // state mismatch on the callback is rejected (server answers 400, login keeps waiting → manual input wins)
-  const b = new CodexAuth({ ...process.env, TH_CODEX_AUTH_BASE: auth.url, TH_CODEX_CALLBACK_PORT: String(port + 1) });
+  const b = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url, MPH_CODEX_CALLBACK_PORT: String(port + 1) });
   const c2 = await b.login({
     onAuth: () => { fetch(`http://127.0.0.1:${port + 1}/auth/callback?code=bad&state=wrong`).then((r) => assert.equal(r.status, 400)).catch(() => {}); },
     manualInput: () => new Promise((r) => setTimeout(() => r(`http://localhost:${port + 1}/auth/callback?code=pasted-code`), 100)),
@@ -147,7 +147,7 @@ test("codex login: PKCE authorize URL, local callback, code exchange, credential
 test("codex transport: headers, stream/store forced, instructions hoisted, SSE aggregated for non-stream callers, 401 → refresh → retry", async () => {
   const auth = await mockAuth(); const codex = await mockCodex({ reject401Once: true });
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(3600, "cur"), refreshToken: "rt-cur", accountId: ACC } }));
-  const a = new CodexAuth({ ...process.env, TH_CODEX_AUTH_BASE: auth.url });
+  const a = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url });
   const t = new CodexTransport(a, codex.url, "token_harness_test");
   const body = { model: "gpt-5.6-sol", input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "be brief" }] }, { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }], stream: false, store: true, metadata: { th_compact: "1" }, prompt_cache_key: "sess-9" };
   const r = await t.responses(body, { stream: false });
@@ -173,10 +173,10 @@ test("codex transport: headers, stream/store forced, instructions hoisted, SSE a
   await auth.close(); await codex.close();
 });
 
-test("th-proxy and the harness client go through the built-in codex upstream", async () => {
+test("mph-proxy and the harness client go through the built-in codex upstream", async () => {
   const codex = await mockCodex();
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(3600, "cur"), refreshToken: "rt-cur", accountId: ACC } }));
-  process.env.TH_CODEX_BASE_URL = codex.url;
+  process.env.MPH_CODEX_BASE_URL = codex.url;
   const { Proxy } = await import("../src/proxy/server.js");
   const p = new Proxy({ port: 0, recallMode: "substitute" });
   assert.equal(p.up.provider, "codex");
@@ -206,10 +206,10 @@ test("th-proxy and the harness client go through the built-in codex upstream", a
   assert.equal(resp.text, "hello from codex"); assert.equal(streamed, "hello from codex"); assert.equal(resp.usage.cached, 100);
   // openai_compatible via overrides still works (upstream = codex mock pretending to be /v1 is not valid; use env base url to a plain mock)
   const plain = await listen((req, res, raw) => { const b = JSON.parse(raw); res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "plain:" + req.headers.authorization + ":" + b.stream }] }], usage: {} })); });
-  const u = upstreamFor({}, { TH_OPENAI_BASE_URL: plain.url + "/v1", TH_OPENAI_API_KEY: "sk-test" });
+  const u = upstreamFor({}, { MPH_OPENAI_BASE_URL: plain.url + "/v1", MPH_OPENAI_API_KEY: "sk-test" });
   assert.equal(u.provider, "openai_compatible");
   const pr: any = await (await u.responses({ model: "m", input }, { stream: false })).json();
   assert.equal(pr.output[0].content[0].text, "plain:Bearer sk-test:false");
-  delete process.env.TH_CODEX_BASE_URL;
+  delete process.env.MPH_CODEX_BASE_URL;
   srv.closeAllConnections(); srv.close(); await codex.close(); await plain.close();
 });

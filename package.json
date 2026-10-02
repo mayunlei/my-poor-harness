@@ -1,6 +1,6 @@
 {
-  "name": "token-harness",
-  "version": "0.1.0",
+  "name": "my-poor-harness",
+  "version": "0.2.0",
   "description": "Token-saving harness for coding agents: context rewrite core, Responses API proxy, agent loop with fork/merge, sidecar tuner, live dashboard.",
   "private": true,
   "type": "module",
@@ -9,10 +9,10 @@
     "node": ">=20.11"
   },
   "bin": {
-    "th": "bin/th.js",
-    "th-proxy": "bin/th-proxy.js",
-    "th-sidecar": "bin/th-sidecar.js",
-    "th-dash": "bin/th-dash.js"
+    "mph": "bin/mph.js",
+    "mph-proxy": "bin/mph-proxy.js",
+    "mph-sidecar": "bin/mph-sidecar.js",
+    "mph-dash": "bin/mph-dash.js"
   },
   "files": [
     "bin",

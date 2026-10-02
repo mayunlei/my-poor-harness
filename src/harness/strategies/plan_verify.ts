@@ -25,7 +25,7 @@
  * Honest limits: a plan made before the work starts goes stale, so a step that
  * cannot be made to pass triggers a bounded replan rather than more arguing;
  * and for a task of two or three steps the verification overhead is pure loss.
- * `th compare` exists to find out where the crossover actually is instead of
+ * `mph compare` exists to find out where the crossover actually is instead of
  * guessing.
  */
 import { runTurn, FIXED_PROMPT } from "../loop.js";

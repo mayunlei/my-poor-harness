@@ -541,13 +541,13 @@ saving = 1 − Σ rewritten_c_i / Σ measured_c_i
 | 4.6 读缓存 | `(path, range, hash)` 会话级缓存；窗口外不去重 | `tools.ts`、`rewrite.ts` pass C |
 | 4.7 每轮重建与 S | 固定提示 ≈450 token + digest + 上一轮窗口存根 + 新消息；`state_update` 写笔记；可选 T2 小模型摘要 | `src/harness/loop.ts`、`core/summary.ts` |
 | 4.8 fork / merge / discard | 会话 DAG，merge 合并状态增量成 ≤600 token 的 merged block | `src/harness/session.ts` |
-| 4.9 map-reduce | `th map`，每条目 fresh 上下文，T3 模型，batch 画像 | `src/harness/cli.ts` |
+| 4.9 map-reduce | `mph map`，每条目 fresh 上下文，T3 模型，batch 画像 | `src/harness/cli.ts` |
 | 4.10 旋钮 | 28 个旋钮带 default/min/max/step，五层覆盖，变更带来源可回滚；cacheBreaking 标记 | `src/core/knobs.ts` |
 | 4.11 sidecar | 账本聚合、折叠净收益、缓存衰减、delegate 通过率；爬山 + Thompson + k̂ 校准 + TTL 拟合；质量护栏回滚并冻结 | `src/sidecar/` |
 | 4.12 多模型分级 | T0–T4 路由表，`delegate` 先便宜后升级，按任务类通过率调整 | `src/harness/router.ts` |
 | 4.1 proxy | `/v1/responses` 透明代理，按 `prompt_cache_key` 持久化折叠边界，注入 `recall` 工具（substitute / loop / off） | `src/proxy/server.ts` |
 | 5.1 回放基准 | 逐请求重建 + 公共前缀模拟缓存 + 估计器按实测校准（比值 0.99） | `src/bench/replay.ts` |
-| 内置 Codex 反代（10-01 晚新增） | 凭据顺序 env → `~/.token_harness/codex-auth.json` → `~/.codex/auth.json`；到期前用 refresh_token 刷新并把轮换后的 token 同步回 Codex CLI 的文件；`th login` 走 PKCE（浏览器回调 localhost:1455 或手工粘贴）；上游 `chatgpt.com/backend-api/codex/responses`，强制 `stream:true, store:false`，非流式调用由反代聚合 SSE；`response.completed` 的 `output` 为空、SSE 无 content-type，这两点都做了处理；429/5xx/网络错误退避重试，401 刷新一次；`x-codex-*` 限额头透传给 Codex 客户端。`provider=openai_compatible` 时填自己的 base_url 和 api_key；解析顺序 CLI → env → config.json → 默认 codex | `src/upstream/` |
+| 内置 Codex 反代（10-01 晚新增） | 凭据顺序 env → `~/.my-poor-harness/codex-auth.json` → `~/.codex/auth.json`；到期前用 refresh_token 刷新并把轮换后的 token 同步回 Codex CLI 的文件；`mph login` 走 PKCE（浏览器回调 localhost:1455 或手工粘贴）；上游 `chatgpt.com/backend-api/codex/responses`，强制 `stream:true, store:false`，非流式调用由反代聚合 SSE；`response.completed` 的 `output` 为空、SSE 无 content-type，这两点都做了处理；429/5xx/网络错误退避重试，401 刷新一次；`x-codex-*` 限额头透传给 Codex 客户端。`provider=openai_compatible` 时填自己的 base_url 和 api_key；解析顺序 CLI → env → config.json → 默认 codex | `src/upstream/` |
 | agent_message 折叠（10-01 晚新增） | 多 agent 会话里 `agent_message` 条目（载荷为 encrypted_content）在窗口外折成一行存根；文本载荷进 artifact 可 recall，加密载荷丢弃；token 估计按 reasoning 的字符比折算而不是 JSON 长度 | `rewrite.ts` 折叠段 |
 
 **回放结果（proxy 模式，默认旋钮）**
@@ -567,7 +567,7 @@ saving = 1 − Σ rewritten_c_i / Σ measured_c_i
 - 教训：第一版预算折叠每步触发，变成滑动改写，成本当量反而是基线的 0.67 倍。加滞回后才回到 1.4 倍以上。3.5 节的警告在数据上被验证了一次。
 - agent_message 折叠和 `compaction` 条目的 cap（`compaction_item_cap`）已实现。
 
-**R6 质量回归（2026-10-02，`bench/swe_regress.py`）**：SWE-bench Lite dev 23 题，求解器 `th run`（最多 40 步），模型 qwen3.7-plus（DashScope，经 Chat Completions 适配），判分复用 agentic_agent 的隐藏测试评估（FAIL_TO_PASS + PASS_TO_PASS），每题每组跑 1 次。三组只差上下文策略：off 关闭全部压缩；on 默认旋钮；tight 为 turn_budget 20000、window 6、cap 1500。
+**R6 质量回归（2026-10-02，`bench/swe_regress.py`）**：SWE-bench Lite dev 23 题，求解器 `mph run`（最多 40 步），模型 qwen3.7-plus（DashScope，经 Chat Completions 适配），判分复用 agentic_agent 的隐藏测试评估（FAIL_TO_PASS + PASS_TO_PASS），每题每组跑 1 次。三组只差上下文策略：off 关闭全部压缩；on 默认旋钮；tight 为 turn_budget 20000、window 6、cap 1500。
 
 | 组 | 通过 | 仅看 FAIL_TO_PASS | 输入 token | 未命中缓存 | 输出 | 步数 | 发生折叠的题 | 成本当量 |
 |---|---|---|---|---|---|---|---|---|
@@ -579,7 +579,7 @@ saving = 1 − Σ rewritten_c_i / Σ measured_c_i
 - 质量不退化，满足"accepted 不低于基线"。没有任何一题因为压缩从通过变成失败。分歧只有 2 题，都是 on 和 tight 通过、off 失败（其中 sqlfluff-2419 是 off 组模型没调用 edit 就宣称已修复），属于单次采样噪声范围。
 - token 节省在这个基准上测不出来，"下降 ≥3×"不成立。单轮 SWE 题加 qwen 的上下文很小（平均每步 9K 到 10K），默认 60K 预算下 on 组只有 2 题触发折叠，tight 组也只有 5 题。on 比 off 少 26% 输入，主要来自步数少和单条输出 cap（2000 对 8000），成本当量只差 5%。压缩的收益要在长会话、多轮对话或 Codex 回放里看（见上面的回放结果）。
 - 判分受限的题：marshmallow-1359（PASS_TO_PASS 测试 ID 含空格被截断）、pvlib-1854（fixture setup error）、pydicom-1413（环境相关的 TypeError），三组同样失败，与策略无关。
-- 回归中修掉的框架问题：判分前按官方 SWE-bench 做法把测试补丁涉及的文件还原到基线；以 base commit 为基准判分（qwen 会自己 `git commit`，3 个任务因此重跑）；题目提示里的工作区路径改成每组自己的副本；后台任务日志从用户仓库移到 `~/.token_harness/jobs`；启动器改为用绝对路径加载 tsx。
-- 产物：`~/.token_harness/regress/r6_qwen37_20261001/`（`results.jsonl`、`summary.md`、每题 `runs/<arm>/<id>/` 里的 agent 日志、final.diff、eval_result.json）。
+- 回归中修掉的框架问题：判分前按官方 SWE-bench 做法把测试补丁涉及的文件还原到基线；以 base commit 为基准判分（qwen 会自己 `git commit`，3 个任务因此重跑）；题目提示里的工作区路径改成每组自己的副本；后台任务日志从用户仓库移到 `~/.my-poor-harness/jobs`；启动器改为用绝对路径加载 tsx。
+- 产物：`~/.my-poor-harness/regress/r6_qwen37_20261001/`（`results.jsonl`、`summary.md`、每题 `runs/<arm>/<id>/` 里的 agent 日志、final.diff、eval_result.json）。
 
-**真实验证（2026-10-01 晚，内置 Codex 反代，模型 gpt-5.6-sol）**：`th whoami` 复用 `~/.codex/auth.json`；th-proxy 非流式请求返回 "pong"（in 137 / out 5 入账本），流式请求事件完整并把 `x-codex-plan-type` 等头透传；`th run` 4 步完成"建 hello.txt、cat 验证、state_update、回复 done"。验证期间遇到一次上游 `server_is_overloaded`（response.failed 被原样透传），据此加了退避重试。`~/Program/codex_api` 不再是前置条件，`--upstream` 仍可指向它。
+**真实验证（2026-10-01 晚，内置 Codex 反代，模型 gpt-5.6-sol）**：`mph whoami` 复用 `~/.codex/auth.json`；mph-proxy 非流式请求返回 "pong"（in 137 / out 5 入账本），流式请求事件完整并把 `x-codex-plan-type` 等头透传；`mph run` 4 步完成"建 hello.txt、cat 验证、state_update、回复 done"。验证期间遇到一次上游 `server_is_overloaded`（response.failed 被原样透传），据此加了退避重试。`~/Program/codex_api` 不再是前置条件，`--upstream` 仍可指向它。

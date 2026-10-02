@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-R6 quality regression for token_harness on SWE-bench Lite dev (23 cases).
+R6 quality regression for my-poor-harness on SWE-bench Lite dev (23 cases).
 
 Two arms, same model, same prompt, same step budget; only the context policy differs:
   off : compression disabled (no stubs, no poll collapse, no read dedupe, max output cap,
         max turn budget, no reasoning drop)  -> the baseline
   on  : default knobs (shaping, folding with hysteresis, dedupe, recall)
 
-Solver   : `th run` (token_harness harness loop) in a fresh copy of the repo workspace.
+Solver   : `mph run` (my-poor-harness harness loop) in a fresh copy of the repo workspace.
 Judge    : ~/Program/agentic_agent/scripts/evaluate_codex_subagent_case.py
            (hidden test patch, FAIL_TO_PASS + PASS_TO_PASS, normalized env mode).
 Model    : any OpenAI-compatible endpoint given via env:
-           TH_OPENAI_BASE_URL / TH_OPENAI_API_KEY / TH_OPENAI_WIRE_API, model via --model.
+           MPH_OPENAI_BASE_URL / MPH_OPENAI_API_KEY / MPH_OPENAI_WIRE_API, model via --model.
 
 Usage (python >= 3.10 with pandas + pyarrow):
-  python bench/swe_regress.py --out ~/.token_harness/regress/<stamp> --model qwen3.7-plus \
+  python bench/swe_regress.py --out ~/.mph/regress/<stamp> --model qwen3.7-plus \
       [--arms off,on] [--cases id1,id2] [--parallel 4] [--max-steps 40]
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
-TH_ROOT = Path(__file__).resolve().parents[1]
+MPH_ROOT = Path(__file__).resolve().parents[1]
 AGENTIC = Path(os.environ.get("AGENTIC_AGENT_ROOT", Path.home() / "Program" / "agentic_agent"))
 sys.path.insert(0, str(AGENTIC / "src"))
 sys.path.insert(0, str(AGENTIC))
@@ -83,11 +83,11 @@ def parse_list(v) -> list[str]:
     return [str(x) for x in d] if isinstance(d, list) else [str(d)]
 
 
-def th(args: list[str], env: dict, timeout: float | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess:
-    # resolve tsx from token_harness, not from cwd (the solver runs inside the task workspace)
-    loader = (TH_ROOT / "node_modules" / "tsx" / "dist" / "loader.mjs").as_uri()
-    return subprocess.run([shutil.which("node") or "node", "--import", loader, str(TH_ROOT / "src" / "harness" / "cli.ts"), *args],
-                          cwd=str(cwd or TH_ROOT), env={**env, "NODE_PATH": str(TH_ROOT / "node_modules")}, capture_output=True, text=True, timeout=timeout)
+def mph(args: list[str], env: dict, timeout: float | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    # resolve tsx from my-poor-harness, not from cwd (the solver runs inside the task workspace)
+    loader = (MPH_ROOT / "node_modules" / "tsx" / "dist" / "loader.mjs").as_uri()
+    return subprocess.run([shutil.which("node") or "node", "--import", loader, str(MPH_ROOT / "src" / "harness" / "cli.ts"), *args],
+                          cwd=str(cwd or MPH_ROOT), env={**env, "NODE_PATH": str(MPH_ROOT / "node_modules")}, capture_output=True, text=True, timeout=timeout)
 
 
 def shallow_checkout(repo: str, commit: str, ws: Path) -> None:
@@ -124,7 +124,7 @@ def materialize(materializer: SWEBenchBenchmarkRunner, case, ws: Path, repo_cach
         shallow_checkout(case.repo, case.base_commit, ws)
         mode = "shallow_fetch"
     subprocess.run(["git", "-C", str(ws), "remote", "remove", "origin"], capture_output=True)
-    subprocess.run(["git", "-C", str(ws), "config", "user.email", "bench@token-harness.local"], capture_output=True)
+    subprocess.run(["git", "-C", str(ws), "config", "user.email", "bench@my-poor-harness.local"], capture_output=True)
     subprocess.run(["git", "-C", str(ws), "config", "user.name", "bench"], capture_output=True)
     head = subprocess.run(["git", "-C", str(ws), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
     return SimpleNamespace(mode=mode, workspace_root=str(ws), actual_head=head, synthetic_git_baseline=False,
@@ -150,7 +150,7 @@ def main() -> int:
     for a in arms:
         if a not in ARM_KNOBS:
             raise SystemExit(f"unknown arm {a}")
-    for k in ("TH_OPENAI_BASE_URL", "TH_OPENAI_API_KEY"):
+    for k in ("MPH_OPENAI_BASE_URL", "MPH_OPENAI_API_KEY"):
         if not os.environ.get(k):
             raise SystemExit(f"{k} must be set (OpenAI-compatible endpoint for the solver)")
 
@@ -168,9 +168,9 @@ def main() -> int:
     # --- per-arm harness homes with knobs ------------------------------------------
     for arm in arms:
         home = out / "homes" / arm; home.mkdir(parents=True, exist_ok=True)
-        env = {**base_env, "TOKEN_HARNESS_HOME": str(home)}
+        env = {**base_env, "MPH_HOME": str(home)}
         kv = {"main_model": args.model, "mid_model": args.model, "small_model": args.model, "use_model_summary": "false", **ARM_KNOBS[arm]}
-        r = th(["knobs", *[f"{k}={v}" for k, v in kv.items()]], env)
+        r = mph(["knobs", *[f"{k}={v}" for k, v in kv.items()]], env)
         if r.returncode != 0:
             raise SystemExit(f"knob setup failed for {arm}: {r.stderr}")
         (home / "knobs.effective.txt").write_text(r.stdout)
@@ -254,11 +254,11 @@ def main() -> int:
         venv = agent_envs.get(repo_key, {}).get("venv")
         env = build_shell_env(venv_dir=Path(venv)) if venv else dict(base_env)
         env["PYTHONPATH"] = str(ws / "src") if (ws / "src").is_dir() and any((ws / "src").glob("*/__init__.py")) else str(ws)
-        env["TOKEN_HARNESS_HOME"] = str(home)
+        env["MPH_HOME"] = str(home)
         t0 = time.time()
         status = "ok"
         try:
-            r = th(["run", "--cwd", str(ws), "--max-steps", str(args.max_steps), "--title", f"{arm}:{iid}", "--prompt-file", str(prompt_file)], env, timeout=args.agent_timeout, cwd=ws)
+            r = mph(["run", "--cwd", str(ws), "--max-steps", str(args.max_steps), "--title", f"{arm}:{iid}", "--prompt-file", str(prompt_file)], env, timeout=args.agent_timeout, cwd=ws)
             stdout, stderr = r.stdout, r.stderr
         except subprocess.TimeoutExpired as e:
             status = "agent_timeout"
@@ -370,7 +370,7 @@ def summarize(out: Path, arms: list[str]) -> None:
     for r in rows:
         last[(r["arm"], r["instance_id"])] = r
     ids = sorted({i for _, i in last})
-    lines = ["# token_harness R6 regression (SWE-bench Lite dev)", "", f"output: {out}", ""]
+    lines = ["# my-poor-harness R6 regression (SWE-bench Lite dev)", "", f"output: {out}", ""]
     lines.append("| arm | cases | accepted | input tok | cached | output tok | steps | input / accepted |")
     lines.append("|---|---|---|---|---|---|---|---|")
     agg = {}

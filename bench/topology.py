@@ -18,7 +18,7 @@ argue rounds, which is a fixed overhead that does not shrink with n. So there is
 a crossover, and below it ReAct is simply the right answer.
 
 These are estimates from this machine's measured averages, not measurements of
-the strategies themselves. `th compare --tasks tasks.jsonl` measures the real
+the strategies themselves. `mph compare --tasks tasks.jsonl` measures the real
 thing, including the part this model cannot capture: whether the cheap worker
 actually succeeds.
 

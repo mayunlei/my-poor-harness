@@ -112,6 +112,6 @@ export class AnthropicClient implements ModelClient {
 
 export function clientFor(model: string, env = process.env): ModelClient {
   if (/^claude/.test(model)) return new AnthropicClient(env.ANTHROPIC_API_KEY ?? "", env.ANTHROPIC_BASE_URL);
-  // provider comes from env / ~/.token_harness/config.json; default is the built-in Codex (ChatGPT OAuth) upstream
+  // provider comes from env / ~/.mph/config.json; default is the built-in Codex (ChatGPT OAuth) upstream
   return new OpenAIResponsesClient(upstreamFor({}, env));
 }

@@ -1,7 +1,7 @@
 /**
- * Upstream configuration: where the harness and th-proxy send Responses requests.
+ * Upstream configuration: where the harness and mph-proxy send Responses requests.
  *
- *   ~/.token_harness/config.json
+ *   ~/.mph/config.json
  *   {
  *     "provider": "codex" | "openai_compatible",
  *     "base_url": "https://api.openai.com/v1",      // openai_compatible only
@@ -10,10 +10,12 @@
  *   }
  *
  * Resolution order (highest first): explicit overrides (CLI flags) → environment
- * (TH_PROVIDER, TH_OPENAI_BASE_URL / OPENAI_BASE_URL, TH_OPENAI_API_KEY / OPENAI_API_KEY)
+ * (MPH_PROVIDER, MPH_OPENAI_BASE_URL / OPENAI_BASE_URL, MPH_OPENAI_API_KEY / OPENAI_API_KEY;
+ *  the pre-rename TH_* names still work, see src/core/env.ts)
  * → config.json → default (codex, i.e. the built-in ChatGPT OAuth reverse proxy).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
+import { mphEnv } from "../core/env.js";
 import { dirname, join } from "node:path";
 import { harnessHome } from "../core/knobs.js";
 
@@ -66,18 +68,18 @@ export interface UpstreamOverrides { provider?: Provider; baseUrl?: string; apiK
 export function resolveUpstream(overrides: UpstreamOverrides = {}, env: NodeJS.ProcessEnv = process.env): ResolvedUpstream {
   const r = resolveBase(overrides, env);
   const file = loadConfigFile();
-  const w = overrides.wireApi ?? (env.TH_OPENAI_WIRE_API as WireApi | undefined) ?? (r.source === "config" ? file.wire_api : undefined);
+  const w = overrides.wireApi ?? (mphEnv("OPENAI_WIRE_API", env) as WireApi | undefined) ?? (r.source === "config" ? file.wire_api : undefined);
   return { ...r, wireApi: w === "chat" ? "chat" : "responses", wireApiExplicit: w === "chat" || w === "responses" };
 }
 
 function resolveBase(overrides: UpstreamOverrides, env: NodeJS.ProcessEnv): Omit<ResolvedUpstream, "wireApi" | "wireApiExplicit"> {
   const file = loadConfigFile();
-  const codexBase = env.TH_CODEX_BASE_URL ?? file.codex?.base_url ?? DEFAULT_CODEX_BASE;
+  const codexBase = mphEnv("CODEX_BASE_URL", env) ?? file.codex?.base_url ?? DEFAULT_CODEX_BASE;
   const codexModels = file.codex?.models?.length ? file.codex.models : DEFAULT_CODEX_MODELS;
-  const originator = file.codex?.originator ?? env.TH_CODEX_ORIGINATOR ?? "codex_cli_rs";
-  const envBase = env.TH_OPENAI_BASE_URL ?? env.OPENAI_BASE_URL;
-  const envKey = env.TH_OPENAI_API_KEY ?? env.OPENAI_API_KEY;
-  const envProvider = env.TH_PROVIDER as Provider | undefined;
+  const originator = file.codex?.originator ?? mphEnv("CODEX_ORIGINATOR", env) ?? "codex_cli_rs";
+  const envBase = mphEnv("OPENAI_BASE_URL", env) ?? env.OPENAI_BASE_URL;
+  const envKey = mphEnv("OPENAI_API_KEY", env) ?? env.OPENAI_API_KEY;
+  const envProvider = mphEnv("PROVIDER", env) as Provider | undefined;
 
   if (overrides.provider === "codex") return { provider: "codex", baseUrl: overrides.baseUrl ?? codexBase, codexModels, originator, source: "override" };
   if (overrides.baseUrl || overrides.provider === "openai_compatible") {

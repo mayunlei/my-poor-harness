@@ -12,7 +12,7 @@ import { estimateCacheState } from "../src/core/cache_state.js";
 import { parseInput, readKeyOf, commandKind } from "../src/core/items.js";
 import { countTokens } from "../src/core/tokens.js";
 
-process.env.TOKEN_HARNESS_HOME = mkdtempSync(join(tmpdir(), "th-test-"));
+process.env.MPH_HOME = mkdtempSync(join(tmpdir(), "mph-test-"));
 const K = defaultKnobs();
 const SK = { perOutputCap: 300, headShare: 0.6, rgMaxHits: 5, logTailLines: 5, tracebackTailLines: 4, stripExecHeader: true };
 
@@ -77,7 +77,7 @@ function mkHistory(nCalls: number, outputText: (i: number) => string, cmd: (i: n
 }
 
 test("rewrite is idempotent and folds beyond budget", () => {
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const k = { ...K, turn_budget: 4000, window: 3, per_output_cap: 500 };
   const state = newRewriteState("s1");
   const big = (i: number) => `Output:\n` + `line ${i} `.repeat(400);
@@ -101,7 +101,7 @@ test("rewrite is idempotent and folds beyond budget", () => {
 });
 
 test("rewrite collapses empty poll chains keeping first and last", () => {
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const input: any[] = [{ type: "message", role: "user", content: [{ type: "input_text", text: "run tests" }] }];
   input.push({ type: "function_call", name: "exec_command", call_id: "c0", arguments: JSON.stringify({ cmd: "pytest" }) });
   input.push({ type: "function_call_output", call_id: "c0", output: "Process running\nOutput:\n" });
@@ -116,7 +116,7 @@ test("rewrite collapses empty poll chains keeping first and last", () => {
 });
 
 test("rewrite dedupes identical repeated reads", () => {
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const hist = mkHistory(3, () => "Output:\n" + "def f():\n  return 1\n".repeat(20), () => "sed -n '1,40p' a.py");
   const r = rewrite(hist, { knobs: K, store, state: newRewriteState("s3"), now: 1 });
   assert.equal(r.stats.readsDeduped, 2);
@@ -147,7 +147,7 @@ test("cache state by idle and settings", () => {
 test("token counter works", () => { assert.ok(countTokens("hello world, 你好世界") > 3); });
 
 test("rewrite resyncs when the client replaces its history", () => {
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const k = { ...K, turn_budget: 4000, window: 3, per_output_cap: 500 };
   const state = newRewriteState("s4");
   const big = (i: number) => `Output:\n` + `line ${i} `.repeat(400);
@@ -162,7 +162,7 @@ test("rewrite resyncs when the client replaces its history", () => {
 });
 
 test("rewrite folds multi-agent agent_message items outside the window (encrypted payload dropped, text payload recallable)", () => {
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const k = { ...K, turn_budget: 4000, window: 3, per_output_cap: 500 };
   const state = newRewriteState("agents");
   const big = (i: number) => `Output:\n` + `line ${i} `.repeat(400);

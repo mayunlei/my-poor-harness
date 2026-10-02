@@ -1,5 +1,5 @@
 /**
- * Chat Completions wire adapter: lets the harness and th-proxy (which speak the
+ * Chat Completions wire adapter: lets the harness and mph-proxy (which speak the
  * Responses API internally) use endpoints that only offer /chat/completions
  * (DashScope, vLLM, Ollama, most OpenAI-compatible gateways).
  *

@@ -175,7 +175,7 @@ export function shapeRequest(shape: ShapeName, model: string, effort: string, ca
       body: {
         ...base,
         instructions: "Answer with the single word OK and nothing else.",
-        prompt_cache_key: `th-price-probe-${runId}-cached-${model}`,
+        prompt_cache_key: `mph-price-probe-${runId}-cached-${model}`,
         max_output_tokens: S.tinyOutputTokens,
         input: [{ type: "message", role: "user", content: [{ type: "input_text", text: prefix + `\n\ncall ${call}: answer OK` }] }],
       },
@@ -187,7 +187,7 @@ export function shapeRequest(shape: ShapeName, model: string, effort: string, ca
       body: {
         ...base,
         instructions: "Answer with the single word OK and nothing else.",
-        prompt_cache_key: `th-price-probe-${runId}-uncached-${model}-${call}`,   // unique: nothing may cache
+        prompt_cache_key: `mph-price-probe-${runId}-uncached-${model}-${call}`,   // unique: nothing may cache
         max_output_tokens: S.tinyOutputTokens,
         input: [{ type: "message", role: "user", content: [{ type: "input_text", text: filler(S.prefixTokens, 1000 + call) + `\n\nanswer OK` }] }],
       },
@@ -198,7 +198,7 @@ export function shapeRequest(shape: ShapeName, model: string, effort: string, ca
     body: {
       ...base,
       instructions: "Follow the instruction exactly. Do not add commentary.",
-      prompt_cache_key: `th-price-probe-${runId}-output-${model}`,
+      prompt_cache_key: `mph-price-probe-${runId}-output-${model}`,
       max_output_tokens: S.longOutputTokens,
       input: [{ type: "message", role: "user", content: [{ type: "input_text", text: `Write the integers from 1 to ${S.longOutputTokens - 200}, one per line, nothing else.` }] }],
     },
@@ -211,7 +211,7 @@ export function pollRequest(model: string, runId: string): any {
   return {
     model, store: false, stream: false, reasoning: { effort: "low" }, max_output_tokens: 16,
     instructions: "Answer with the single word OK and nothing else.",
-    prompt_cache_key: `th-price-probe-${runId}-poll`,
+    prompt_cache_key: `mph-price-probe-${runId}-poll`,
     input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "ping" }] }],
   };
 }
@@ -346,7 +346,7 @@ export async function priceProbe(opts: ProbeOptions): Promise<ProbeResult> {
   let polls = 0;
   const poll = async (): Promise<MeterSnapshot> => {
     polls++;
-    const s = await send(up, pollRequest(probeModel, runId), `th-price-probe-${runId}-poll`);
+    const s = await send(up, pollRequest(probeModel, runId), `mph-price-probe-${runId}-poll`);
     if (!s.meter) throw new Error("the upstream returned no x-codex meter headers: this provider does not publish a quota meter, so there is nothing to measure");
     return s.meter;
   };
@@ -388,7 +388,7 @@ export async function priceProbe(opts: ProbeOptions): Promise<ProbeResult> {
       let cached = 0, uncached = 0, output = 0;
       try {
         for (let call = 0; call < opts.n; call++) {
-          const s = await send(up, shapeRequest(shape, model, opts.effort, call, runId).body, `th-price-probe-${runId}-${shape}-${model}`);
+          const s = await send(up, shapeRequest(shape, model, opts.effort, call, runId).body, `mph-price-probe-${runId}-${shape}-${model}`);
           cached += s.cached; uncached += s.uncached; output += s.output;
         }
       } catch (e: any) { return { plan, ok: false, reason: `${model}/${shape}: ${e?.message ?? e}`, log }; }

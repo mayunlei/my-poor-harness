@@ -32,6 +32,6 @@ else if (cmd === "price") {
   const every = Number(opt("--every", "900")) * 1000;
   const loop = () => { try { console.log(`[${new Date().toISOString()}]`); console.log(formatReport(buildReport(ledger))); for (const l of tune(ledger, { scope: opt("--scope", "global") })) console.log("tune:", l); } catch (e) { console.error(e); } };
   loop(); setInterval(loop, every);
-} else console.log(`th-sidecar report [--since ISO] [--json] | tune [--scope global|project:PATH] [--dry-run] | history | watch [--every 900]
+} else console.log(`mph-sidecar report [--since ISO] [--json] | tune [--scope global|project:PATH] [--dry-run] | history | watch [--every 900]
              price [--since ISO] [--min-bursts 4] [--max-gap 120] [--json]   fit the real credits price from the ledger (exits 1 when the data cannot support one)
              price-probe [--models a,b] [--n 8] [--settle 20] [--effort medium] [--json] [--go]   measure it with a controlled burst; dry run unless --go`);

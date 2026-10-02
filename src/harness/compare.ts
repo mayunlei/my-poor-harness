@@ -86,7 +86,7 @@ export async function compareStrategies(o: {
       const strategy = strategyFor(name);
       const srcCwd = task.cwd ?? o.cwd ?? process.cwd();
       // a private copy per run: strategies must not inherit each other's edits
-      const cwd = o.copy ? join(mkdtempSync(join(tmpdir(), "th-cmp-")), "ws") : srcCwd;
+      const cwd = o.copy ? join(mkdtempSync(join(tmpdir(), "mph-cmp-")), "ws") : srcCwd;
       if (o.copy) cpSync(srcCwd, cwd, { recursive: true, dereference: false, filter: (s) => !/\/(node_modules|\.git)(\/|$)/.test(s) });
 
       const knobs = resolveKnobs({ ...(o.knobs ?? {}), strategy: name } as any);

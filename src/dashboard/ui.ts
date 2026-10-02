@@ -7,7 +7,7 @@ export const UI_HTML = String.raw`<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>token-harness live</title>
+<title>my-poor-harness live</title>
 <style>
   :root {
     --bg: #0e1116; --panel: #161b22; --panel2: #1b222c; --line: #2a323d;
@@ -43,8 +43,8 @@ export const UI_HTML = String.raw`<!doctype html>
   .cols { display: grid; grid-template-columns: 1.55fr 1fr; gap: 14px; align-items: start; }
   @media (max-width: 1000px) { .cols { grid-template-columns: 1fr; } }
   table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums; }
-  th { text-align: right; font-weight: 500; color: var(--dim); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 11px; }
-  th:first-child, td:first-child { text-align: left; }
+  mph { text-align: right; font-weight: 500; color: var(--dim); padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; font-size: 11px; }
+  mph:first-child, td:first-child { text-align: left; }
   td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
   tbody tr { cursor: pointer; }
   tbody tr:hover { background: var(--panel2); }
@@ -75,7 +75,7 @@ export const UI_HTML = String.raw`<!doctype html>
 </head>
 <body>
 <header>
-  <h1>token-<b>harness</b> live</h1>
+  <h1>my-poor-<b>harness</b> live</h1>
   <div class="status"><span id="dot" class="dot"></span><span id="conn">connecting…</span></div>
   <div class="status" id="meta"></div>
 </header>
@@ -186,7 +186,7 @@ function chart(s) {
 function sessions(list) {
   const el = document.getElementById("sessions");
   if (!list.length) { el.innerHTML = '<div class="empty">no sessions in the ledger yet</div>'; return; }
-  el.innerHTML = '<table><thead><tr><th>session</th><th>model</th><th>steps</th><th>would send</th><th>sent</th><th>×</th><th>cached</th><th>folds</th><th>recalls</th><th>credits</th><th>last</th></tr></thead><tbody>' +
+  el.innerHTML = '<table><thead><tr><mph>session</mph><mph>model</mph><mph>steps</mph><mph>would send</mph><mph>sent</mph><mph>×</mph><mph>cached</mph><mph>folds</mph><mph>recalls</mph><mph>credits</mph><mph>last</mph></tr></thead><tbody>' +
     list.map(s => { const mult = s.ctxAfter ? s.ctxBefore / s.ctxAfter : 1;
       const folds = (s.events.compact||0) + (s.events.shape||0) + (s.events.dedupe||0) + (s.events.poll_collapse||0);
       return '<tr data-sid="' + esc(s.session) + '" class="' + (s.session === selected ? "sel" : "") + '">' +
@@ -204,7 +204,7 @@ function strategies(list) {
   if (!list || !list.length) { p.hidden = true; return; }
   p.hidden = false;
   document.getElementById("strategies").innerHTML =
-    '<table><thead><tr><th>strategy</th><th>runs</th><th>pass</th><th>calls</th><th>cost-equiv</th><th>per pass</th><th>credits</th><th>cr/pass</th><th>phases</th></tr></thead><tbody>' +
+    '<table><thead><tr><mph>strategy</mph><mph>runs</mph><mph>pass</mph><mph>calls</mph><mph>cost-equiv</mph><mph>per pass</mph><mph>credits</mph><mph>cr/pass</mph><mph>phases</mph></tr></thead><tbody>' +
     list.map(s => {
       const ph = Object.entries(s.phases || {}).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + " " + v).join(", ");
       return '<tr><td>' + esc(s.strategy) + '</td><td>' + (s.runs || 0) + '</td>' +

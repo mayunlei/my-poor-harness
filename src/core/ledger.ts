@@ -54,8 +54,8 @@ export interface LedgerRow {
  * charges — a subscription meters quota, not dollars, and may weigh the three classes
  * differently or not weigh output at all. Every savings number derived from costEquiv is
  * therefore a relative figure, trustworthy for comparing two policies on the same weights and
- * nothing more. `th-sidecar price` estimates the real weights from the credits meter in the
- * ledger, and `th-sidecar price-probe` measures them with a controlled experiment; until one of
+ * nothing more. `mph-sidecar price` estimates the real weights from the credits meter in the
+ * ledger, and `mph-sidecar price-probe` measures them with a controlled experiment; until one of
  * those has run, do not quote costEquiv as money.
  */
 export const PRICE = { cached: 0.1, uncached: 1.0, output: 8.0, cacheWrite: 1.0 };

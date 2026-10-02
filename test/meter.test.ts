@@ -10,10 +10,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 
-const HOME = mkdtempSync(join(tmpdir(), "th-meter-"));
-process.env.TOKEN_HARNESS_HOME = HOME;
-process.env.TH_CODEX_CLI_AUTH = join(HOME, "no-cli-auth.json");
-delete process.env.TH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.TH_PROVIDER; delete process.env.CODEX_ACCESS_TOKEN;
+const HOME = mkdtempSync(join(tmpdir(), "mph-meter-"));
+process.env.MPH_HOME = HOME;
+process.env.MPH_CODEX_CLI_AUTH = join(HOME, "no-cli-auth.json");
+delete process.env.MPH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.MPH_PROVIDER; delete process.env.CODEX_ACCESS_TOKEN;
 
 const { parseMeter, meterDelta, meterHeaders, METER_HEADERS } = await import("../src/upstream/meter.js");
 const { CodexAuth, authFilePath } = await import("../src/upstream/codex_auth.js");
@@ -141,7 +141,7 @@ test("meterHeaders / codex transport: the meter survives SSE aggregation into a 
   await codex.close();
 });
 
-test("th-proxy writes the meter onto the ledger row, and credits_spent is the drop since the previous response", async () => {
+test("mph-proxy writes the meter onto the ledger row, and credits_spent is the drop since the previous response", async () => {
   let balance = 1000;
   const codex = await listen((req, res) => {
     balance -= 1.5;
@@ -151,7 +151,7 @@ test("th-proxy writes the meter onto the ledger row, and credits_spent is the dr
     res.end();
   });
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(), refreshToken: "rt", accountId: ACC } }));
-  process.env.TH_CODEX_BASE_URL = codex.url;
+  process.env.MPH_CODEX_BASE_URL = codex.url;
   const ledgerPath = join(HOME, "proxy-meter.jsonl");
   const { Proxy } = await import("../src/proxy/server.js");
   const p = new Proxy({ port: 0, recallMode: "off" });
@@ -178,5 +178,5 @@ test("th-proxy writes the meter onto the ledger row, and credits_spent is the dr
   assert.equal(rows[1].credits_balance, 997);
   assert.ok(Math.abs(rows[1].credits_spent - 1.5) < 1e-9);
   srv.closeAllConnections(); srv.close(); await codex.close();
-  delete process.env.TH_CODEX_BASE_URL;
+  delete process.env.MPH_CODEX_BASE_URL;
 });

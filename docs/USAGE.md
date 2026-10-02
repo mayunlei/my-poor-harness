@@ -6,13 +6,13 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 | layer | what it does | entry |
 |---|---|---|
 | **ctx-core** | pure, idempotent rewrite of a Responses API `input` array: output shaping that keeps failure fields, stubs for folded outputs (`recall(id)` to expand), poll-chain collapse, read dedupe, fixed-prefix diet, batch folding with hysteresis, cache-aware compaction judge | `src/core` |
-| **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `th-proxy` |
-| **harness** | own agent loop: per-turn rebuild (fixed prompt + state digest + folded window), blocking `run`/`wait` instead of polling, read cache, `delegate` to cheaper models with escalation, session **fork / merge / discard**, map-reduce with fresh contexts | `th` |
-| **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `th-sidecar` |
-| **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `th-sidecar price`, `price-probe` |
-| **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `th compare` scores them on an external oracle | `th run --strategy`, `th compare` |
-| **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `th-dash` |
-| **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `th login`, `th config` |
+| **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `mph-proxy` |
+| **harness** | own agent loop: per-turn rebuild (fixed prompt + state digest + folded window), blocking `run`/`wait` instead of polling, read cache, `delegate` to cheaper models with escalation, session **fork / merge / discard**, map-reduce with fresh contexts | `mph` |
+| **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `mph-sidecar` |
+| **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `mph-sidecar price`, `price-probe` |
+| **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `mph compare` scores them on an external oracle | `mph run --strategy`, `mph compare` |
+| **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `mph-dash` |
+| **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `mph login`, `mph config` |
 
 ## Install
 
@@ -24,37 +24,37 @@ npm test                                  # 52 tests: core, harness loop, strate
 
 ## 0. Upstream: login and config
 
-By default both `th` and `th-proxy` talk to the ChatGPT Codex backend directly with your ChatGPT login (the same thing the Codex CLI does). No codex_api bridge, no API key.
+By default both `mph` and `mph-proxy` talk to the ChatGPT Codex backend directly with your ChatGPT login (the same thing the Codex CLI does). No codex_api bridge, no API key.
 
 ```bash
 npx tsx src/harness/cli.ts whoami     # which credentials would be used (an existing ~/.codex/auth.json is reused as-is)
-npx tsx src/harness/cli.ts login      # browser PKCE login → ~/.token_harness/codex-auth.json (or paste the redirect URL)
+npx tsx src/harness/cli.ts login      # browser PKCE login → ~/.mph/codex-auth.json (or paste the redirect URL)
 npx tsx src/harness/cli.ts logout
-npx tsx src/harness/cli.ts config     # show ~/.token_harness/config.json and the effective upstream
+npx tsx src/harness/cli.ts config     # show ~/.mph/config.json and the effective upstream
 ```
 
-Credential order: `CODEX_ACCESS_TOKEN` env → `~/.token_harness/codex-auth.json` → `~/.codex/auth.json`. Tokens are refreshed before expiry; a refresh rotates the refresh token, so the new pair is written to codex-auth.json and synced back to `~/.codex/auth.json` when that is where it came from (the Codex CLI keeps working).
+Credential order: `CODEX_ACCESS_TOKEN` env → `~/.mph/codex-auth.json` → `~/.codex/auth.json`. Tokens are refreshed before expiry; a refresh rotates the refresh token, so the new pair is written to codex-auth.json and synced back to `~/.codex/auth.json` when that is where it came from (the Codex CLI keeps working).
 
 Own endpoint instead (any OpenAI-compatible `/responses` server, or api.openai.com):
 
 ```bash
 npx tsx src/harness/cli.ts config provider=openai_compatible base_url=https://api.openai.com/v1 api_key=sk-...
-# or per shell: TH_OPENAI_BASE_URL=... TH_OPENAI_API_KEY=...   (env overrides config.json; TH_PROVIDER=codex forces the built-in proxy)
+# or per shell: MPH_OPENAI_BASE_URL=... MPH_OPENAI_API_KEY=...   (env overrides config.json; MPH_PROVIDER=codex forces the built-in proxy)
 ```
 
 Resolution: CLI flags → env → `config.json` → default `codex`.
 
-Endpoints that only speak **Chat Completions** (DashScope / Qwen, vLLM, Ollama, most gateways) work too: set `wire_api=chat` (or `TH_OPENAI_WIRE_API=chat`, or `th-proxy --wire-api chat`). The upstream translates each Responses request to `/chat/completions` (tool calls, tool outputs, custom tools, folded stubs) and the reply back to Responses items, streaming included, so the harness and th-proxy are unchanged. Without an explicit setting, a 404 on `/responses` switches that upstream to chat automatically. Encrypted reasoning cannot be sent back over chat and is dropped.
+Endpoints that only speak **Chat Completions** (DashScope / Qwen, vLLM, Ollama, most gateways) work too: set `wire_api=chat` (or `MPH_OPENAI_WIRE_API=chat`, or `mph-proxy --wire-api chat`). The upstream translates each Responses request to `/chat/completions` (tool calls, tool outputs, custom tools, folded stubs) and the reply back to Responses items, streaming included, so the harness and mph-proxy are unchanged. Without an explicit setting, a 404 on `/responses` switches that upstream to chat automatically. Encrypted reasoning cannot be sent back over chat and is dropped.
 
 ```bash
-TH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 TH_OPENAI_API_KEY=sk-... TH_OPENAI_WIRE_API=chat \
+MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=sk-... MPH_OPENAI_WIRE_API=chat \
   npx tsx src/harness/cli.ts run --model qwen3.7-plus --max-steps 40 --prompt-file task.txt
 ```
 
 ## 1. Proxy in front of Codex
 
 ```
-Codex Desktop / CLI  →  th-proxy :8791  →  chatgpt.com/backend-api/codex/responses (your ChatGPT login)
+Codex Desktop / CLI  →  mph-proxy :8791  →  chatgpt.com/backend-api/codex/responses (your ChatGPT login)
                                         └→  or any OpenAI-compatible /responses endpoint (--upstream / config.json)
 ```
 
@@ -69,19 +69,19 @@ Point Codex at it. Two options in `~/.codex/config.toml`:
 
 ```toml
 # A) ChatGPT-login Codex (Desktop / CLI): Codex posts to {chatgpt_base_url}/codex/responses with its own
-#    OAuth token; th-proxy accepts any */responses path and forwards to codex_api's /v1/responses.
+#    OAuth token; mph-proxy accepts any */responses path and forwards to codex_api's /v1/responses.
 chatgpt_base_url = "http://127.0.0.1:8791"
 
 # B) API-key style provider (uses the codex_api OAuth bridge behind the proxy)
-[model_providers.th]
-name = "token-harness"
+[model_providers.mph]
+name = "my-poor-harness"
 base_url = "http://127.0.0.1:8791/v1"
 wire_api = "responses"
-model_provider = "th"
+model_provider = "mph"
 ```
 
 Notes
-- The proxy identifies a conversation by `prompt_cache_key` (Codex sets it) and persists the fold boundary per conversation under `~/.token_harness/proxy/sessions/`, so rewrites stay identical across requests (prefix-cache stable).
+- The proxy identifies a conversation by `prompt_cache_key` (Codex sets it) and persists the fold boundary per conversation under `~/.mph/proxy/sessions/`, so rewrites stay identical across requests (prefix-cache stable).
 - `recall` modes: `substitute` (default; the client reports the unknown tool, the proxy swaps in the real artifact slice on the next request — streaming untouched), `loop` (proxy resolves recalls itself, buffered), `off`.
 - Codex backend specifics handled by the built-in upstream: requests are always `stream: true, store: false`; non-streaming clients get the SSE aggregated into JSON; `response.completed` comes with an empty `output`, so items are rebuilt from `response.output_item.done`; the SSE has no content-type header; `x-codex-*` rate-limit headers are forwarded to the client; HTTP 429/5xx and network errors are retried with backoff, a 401 refreshes the token once.
 - Model names are passed through unchanged (`gpt-5.6-sol` etc.). `/v1/models` lists `codex.models` from config.json.
@@ -118,7 +118,7 @@ npx tsx src/sidecar/cli.ts watch --every 900 # report + tune every 15 min
 npx tsx src/sidecar/cli.ts history           # every knob change with who/why/scope
 ```
 
-Knobs live in `~/.token_harness/knobs.json` with layers `global → profile → project → session → turn`; all have bounds and steps (`src/core/knobs.ts`). Cache-breaking knobs (`main_model`, `effort_*`, `prefix_trim`, `reasoning_keep_last`) are only applied at fold events or turn boundaries.
+Knobs live in `~/.mph/knobs.json` with layers `global → profile → project → session → turn`; all have bounds and steps (`src/core/knobs.ts`). Cache-breaking knobs (`main_model`, `effort_*`, `prefix_trim`, `reasoning_keep_last`) are only applied at fold events or turn boundaries.
 
 ## 4. Replay benchmark (zero model cost)
 
@@ -140,8 +140,8 @@ npx tsx src/dashboard/cli.ts --once | jq .totals  # one JSON snapshot, then exit
 | flag | meaning |
 |---|---|
 | `--port 8792` / `--host 127.0.0.1` | where to listen |
-| `--ledger PATH` | a ledger other than `~/.token_harness/ledger.jsonl` (e.g. one copied off a server) |
-| `--weekly-budget 50M` | draws the quota gauge; accepts `50000000`, `50M`, `1.5B`, or `TH_WEEKLY_BUDGET` |
+| `--ledger PATH` | a ledger other than `~/.mph/ledger.jsonl` (e.g. one copied off a server) |
+| `--weekly-budget 50M` | draws the quota gauge; accepts `50000000`, `50M`, `1.5B`, or `MPH_WEEKLY_BUDGET` |
 | `--poll-ms 1000` | how often to re-check the ledger (it also watches the directory) |
 | `--open` | open a browser at the dashboard |
 | `--once` | print a JSON snapshot and exit — for scripts, CI and regression checks |
@@ -169,27 +169,27 @@ What it shows
   `delegate` / `fork` / `merge` / `knob_change` event with the tokens it removed.
 - **where the savings came from** — the same events as a ranked breakdown.
 
-It only ever reads the ledger: run it next to the proxy, the harness and `th-sidecar watch`
+It only ever reads the ledger: run it next to the proxy, the harness and `mph-sidecar watch`
 without interference. The tailer reads just the appended bytes, holds back half-written lines,
 and re-reads from the start if the ledger is truncated or rotated.
 
 ## 6. Build and release
 
 ```bash
-npm run build                    # tsc → dist/ (the th* commands prefer dist/ when it exists)
+npm run build                    # tsc → dist/ (the mph* commands prefer dist/ when it exists)
 npm run package                  # typecheck + test + build + tarballs into release/
 SKIP_TESTS=1 npm run package     # when CI already ran them
 npm run release -- --dry-run     # show the tag, artifacts and notes; change nothing
 npm run release -- 0.2.0         # bump, tag, push, create the GitHub release, upload
 ```
 
-`npm run package` produces `release/token-harness-<v>.tgz` (npm-installable),
-`release/token-harness-<v>-standalone.tar.gz` (compiled `dist/` plus the installed runtime
+`npm run package` produces `release/my-poor-harness-<v>.tgz` (npm-installable),
+`release/my-poor-harness-<v>-standalone.tar.gz` (compiled `dist/` plus the installed runtime
 dependency tree — plain `node`, no npm install, no network) and `release/SHA256SUMS.txt`. The
 staged standalone tree is smoke-tested with plain node before being tarred.
 
 `bin/_launch.js` runs `dist/` when present and falls back to `tsx` on `src/` otherwise, so the
-same `bin/th*` entry points work in a source checkout and in a release tarball.
+same `bin/mph*` entry points work in a source checkout and in a release tarball.
 
 CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (typecheck + test + build on Node
 20/22/24), [`.github/workflows/release.yml`](../.github/workflows/release.yml) (on a `v*` tag:
@@ -288,8 +288,8 @@ ran (planner, workers, verifiers, argue rounds — overhead cannot hide), cost p
 wall time. It also flags the dangerous case explicitly: a run that **claimed verified but
 failed the oracle** — the verifier was fooled, which is worse than a plain failure.
 
-Results are written to `~/.token_harness/compare-<ts>.json`, and every model call carries
-`extra.strategy` in the ledger, so `th-sidecar report` and the dashboard break down by
+Results are written to `~/.mph/compare-<ts>.json`, and every model call carries
+`extra.strategy` in the ledger, so `mph-sidecar report` and the dashboard break down by
 strategy too.
 
 ## 8. Measuring the real price
@@ -301,7 +301,7 @@ default and nothing here would know. So: measure it.
 
 ### What the backend actually tells you
 
-Every Codex response carries these headers, and `th-proxy` now records them per ledger row
+Every Codex response carries these headers, and `mph-proxy` now records them per ledger row
 (`credits_balance`, `credits_spent`, `primary_used_percent`, `secondary_used_percent`,
 `plan_type`, `active_limit`, `effort`):
 
@@ -361,7 +361,7 @@ trustworthy:
    input every call (uncached), a tiny input with a long forced output (output).
 3. **Burst, then wait for the balance to settle** before reading it. This is the step that
    defeats eventual consistency.
-4. Solve the 3×3 per model with non-negative least squares, write `~/.token_harness/prices.json`
+4. Solve the 3×3 per model with non-negative least squares, write `~/.mph/prices.json`
    with provenance: when, account, plan, n, settle, per-shape token counts and credits,
    residual, and the poll overhead that was subtracted.
 
@@ -388,6 +388,13 @@ scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
 .github/      ci and release workflows
 ```
 
-Data lives under `~/.token_harness/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `proxy/sessions/`, `harness/sessions/`, `sidecar/`). Override with `TOKEN_HARNESS_HOME`.
+Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `proxy/sessions/`, `harness/sessions/`, `sidecar/`). Override with `MPH_HOME`.
+
+The project used to be called token-harness. If `~/.token_harness/` exists it is used instead
+of `~/.mph/`, because it holds the ledger history and the Codex OAuth tokens and silently
+starting an empty one would look like data loss. Nothing is migrated for you: `mv
+~/.token_harness ~/.mph` when you want the new name. The old `TH_*` environment variables and
+`TOKEN_HARNESS_HOME` are still read as fallbacks (`src/core/env.ts`), so existing shells and
+scripts keep working.
 
 Multi-agent Codex sessions: `agent_message` items (spawn_agent / send_message traffic, payload encrypted) are folded outside the window like tool outputs: a one-line stub with the message header; text payloads go to the artifact store and are recallable, encrypted payloads are dropped.

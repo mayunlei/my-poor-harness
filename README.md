@@ -101,7 +101,7 @@ ledger row; the sidecar reads the ledger to report savings, tune knobs within bo
 provenance for every change it makes.
 
 **8. Show me the money, live.**
-A saving you can't see is a saving you won't trust. `th-dash` tails the ledger and shows the
+A saving you can't see is a saving you won't trust. `mph-dash` tails the ledger and shows the
 quota stretch, the tokens that were never sent, and every fold as it happens — see below.
 
 **9. ReAct is a default, not a law.**
@@ -116,7 +116,7 @@ commands itself — argues with the worker until the evidence holds. Acceptance 
 not an opinion; a verifier that reads "I fixed it, all tests pass" is a rubber stamp.
 `python3 bench/topology.py` puts the crossover near 15-20 steps: below it the verification
 overhead is pure loss, at the average 29-step turn it is ~0.65× ReAct, at 100 steps ~0.22×.
-Those are token estimates, not proof that the cheap worker succeeds — so `th compare` runs
+Those are token estimates, not proof that the cheap worker succeeds — so `mph compare` runs
 the same tasks under every strategy and scores them with each task's own acceptance
 command, never with the strategy's own claim. Strategies are a knob because the answer is
 task-dependent and should be measured, not argued about.
@@ -128,10 +128,10 @@ task-dependent and should be measured, not argued about.
 ```bash
 # grab the latest release
 gh release download --repo mayunlei/my-poor-harness --pattern '*standalone.tar.gz'
-tar xzf token-harness-*-standalone.tar.gz && cd token-harness-*/
+tar xzf my-poor-harness-*-standalone.tar.gz && cd my-poor-harness-*/
 
-node bin/th-dash.js --open          # dashboard, straight away
-node bin/th-proxy.js --port 8791    # proxy in front of your existing Codex client
+node bin/mph-dash.js --open          # dashboard, straight away
+node bin/mph-proxy.js --port 8791    # proxy in front of your existing Codex client
 ```
 
 The standalone tarball carries the compiled `dist/` and its one runtime dependency, so it runs
@@ -139,7 +139,7 @@ on plain `node` ≥20.11 with no `npm install` and no network. Prefer npm?
 
 ```bash
 gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz' --exclude '*standalone*'
-npm install -g ./token-harness-*.tgz     # puts th, th-proxy, th-sidecar, th-dash on PATH
+npm install -g ./my-poor-harness-*.tgz     # puts mph, mph-proxy, mph-sidecar, mph-dash on PATH
 ```
 
 Verify what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
@@ -151,18 +151,18 @@ git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
 npm test                      # 52 tests, no network, no API key
 npm run dash -- --open        # live dashboard
-npm run proxy                 # th-proxy on :8791
+npm run proxy                 # mph-proxy on :8791
 npm run bench:replay -- --limit 30 --min-bytes 200000   # offline savings on your own sessions
 ```
 
 ### See it working: the live dashboard
 
 ```bash
-npm run dash -- --open --weekly-budget 50M    # or: th-dash --open
+npm run dash -- --open --weekly-budget 50M    # or: mph-dash --open
 ```
 
 The layout, with the headline numbers off a short local run and the lower rows sketched in
-(`th-dash --once` prints the same snapshot as JSON):
+(`mph-dash --once` prints the same snapshot as JSON):
 
 ```
    ┌ quota stretch ──┬ tokens not sent ─┬ cost-equiv saved ┬ sessions ──┐
@@ -180,7 +180,7 @@ The layout, with the headline numbers off a short local run and the lower rows s
    s_11f0a2e1  gpt-5.6-sol   ×8.21     14:42:51  dedupe    t0·s11  −9.4K tok
 ```
 
-It tails `~/.token_harness/ledger.jsonl` and pushes updates over SSE, so numbers move while the
+It tails `~/.mph/ledger.jsonl` and pushes updates over SSE, so numbers move while the
 agent works. **Quota stretch** is the headline: what you would have paid divided by what you
 did pay — and when the upstream meters credits, the real spend and remaining balance sit
 beside it. Per session you get the context curve (what the client wanted to send vs what actually
@@ -199,8 +199,8 @@ Typechecks, runs the tests, compiles to `dist/`, then writes into `release/`:
 
 | artifact | what it is |
 |---|---|
-| `token-harness-<v>.tgz` | npm-installable package (`npm i -g`), deps from the registry |
-| `token-harness-<v>-standalone.tar.gz` | `dist/` + `bin/` + runtime deps — runs offline on plain node |
+| `my-poor-harness-<v>.tgz` | npm-installable package (`npm i -g`), deps from the registry |
+| `my-poor-harness-<v>-standalone.tar.gz` | `dist/` + `bin/` + runtime deps — runs offline on plain node |
 | `SHA256SUMS.txt` | checksums for both |
 
 The staged standalone copy is smoke-tested with plain `node` before it is tarred, so a broken
@@ -232,7 +232,7 @@ in CI, checks the tag matches `package.json`, and attaches them to the release.
 Five layers, each usable on its own: `src/core` (the pure rewrite), `src/proxy` (transparent
 `/v1/responses` proxy — point Codex Desktop/CLI at it and nothing else changes), `src/harness`
 (own loop, session fork/merge, map-reduce), `src/sidecar` (reads the ledger, tunes the knobs),
-plus `src/harness/strategies` (ReAct vs planner/worker/verifier, with `th compare` to settle
+plus `src/harness/strategies` (ReAct vs planner/worker/verifier, with `mph compare` to settle
 it), `src/dashboard` (the live view) and `src/upstream` (built-in ChatGPT-OAuth Codex transport,
 or any OpenAI-compatible endpoint, Chat Completions included).
 
@@ -257,4 +257,4 @@ strategies, sidecar, dashboard, replay bench, price metering, and the Codex/Chat
   Until that probe has run, `PRICE` in the ledger is a placeholder, and price-based routing
   stays off.
 - *plan_verify vs ReAct — modelled, not yet measured on real tasks.* The crossover estimate
-  comes from `bench/topology.py`; `th compare` is the thing that settles it.
+  comes from `bench/topology.py`; `mph compare` is the thing that settles it.

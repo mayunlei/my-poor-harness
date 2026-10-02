@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { homedir } from "node:os";
 import { rewrite, newRewriteState } from "../core/rewrite.js";
 import { ArtifactStore } from "../core/artifacts.js";
-import { resolveKnobs, PROFILES, type KnobOverrides } from "../core/knobs.js";
+import { resolveKnobs, PROFILES, harnessHome, type KnobOverrides } from "../core/knobs.js";
 import { initTokenizer, countTokens, tokenizerName } from "../core/tokens.js";
 import { PRICE } from "../core/ledger.js";
 import { sha1 } from "../core/items.js";
@@ -66,7 +66,7 @@ export async function replaySession(path: string, knobs = resolveKnobs(), ttlS =
   let { reqs, model } = requestsFromRollout(path);
   if (reqs.length === 0) return null;
   if (reqs.length > maxRequests) reqs = reqs.slice(0, maxRequests); // bound the O(n²) replay on very long sessions
-  const st = store ?? new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME ?? join(homedir(), ".token_harness"), "bench-artifacts"));
+  const st = store ?? new ArtifactStore(join(harnessHome(), "bench-artifacts"));
   const state = newRewriteState(path);
   let prevHashes: string[] = []; let prevTs = 0;
   const res: SessionResult = { file: path, requests: reqs.length, model, measuredInput: 0, measuredCached: 0, measuredOutput: 0, estBefore: 0, estAfter: 0, simCachedAfter: 0, simUncachedAfter: 0, compactions: 0, folded: 0, pollsCollapsed: 0, readsDeduped: 0, shapedSaved: 0, costBaseline: 0, costAfter: 0, prefixTrimmed: 0, byKind: {} };
@@ -114,7 +114,7 @@ async function main() {
   const knobs = resolveKnobs(PROFILES[profile], overrides);
   console.error(`replaying ${list.length} sessions, tokenizer=${tokenizerName()}, profile=${profile}, overrides=${JSON.stringify(overrides)}`);
   const results: SessionResult[] = [];
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME ?? join(homedir(), ".token_harness"), "bench-artifacts"));
+  const store = new ArtifactStore(join(harnessHome(), "bench-artifacts"));
   let i = 0;
   for (const f of list) {
     const r = await replaySession(f, knobs, knobs.cache_ttl_estimate_s, store, maxRequests);

@@ -1,5 +1,5 @@
 /**
- * Shared launcher for the th* commands.
+ * Shared launcher for the mph* commands.
  *
  * A release tarball ships the compiled dist/ and runs on plain node with no
  * dev dependencies; a source checkout has no dist/ and is run through tsx.

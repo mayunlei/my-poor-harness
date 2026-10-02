@@ -14,7 +14,7 @@
  * The price is more model calls per unit of work (plan, worker, verifier, and
  * an argue round or two), so on a three-step task it loses and on a long one it
  * wins by a lot. Which is exactly why this is a pluggable choice with a
- * benchmark attached (`th compare`) rather than an opinion in a prompt.
+ * benchmark attached (`mph compare`) rather than an opinion in a prompt.
  */
 import type { SessionData } from "../session.js";
 import type { Knobs } from "../../core/knobs.js";

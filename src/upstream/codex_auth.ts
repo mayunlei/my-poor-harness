@@ -3,7 +3,7 @@
  *
  * Credential sources, in order:
  *   1. env: CODEX_ACCESS_TOKEN (+ CODEX_REFRESH_TOKEN, CODEX_ACCOUNT_ID, CODEX_ID_TOKEN)
- *   2. ~/.token_harness/codex-auth.json   (written by `th login` and by refreshes)
+ *   2. ~/.mph/codex-auth.json   (written by `mph login` and by refreshes)
  *   3. ~/.codex/auth.json                  (an existing Codex CLI / Desktop login is reused as-is)
  *
  * Tokens are refreshed with the refresh_token before they expire (single-flight).
@@ -16,6 +16,7 @@
  * registered for the Codex client id), or accepts a pasted code / redirect URL.
  */
 import { createServer } from "node:http";
+import { mphEnv } from "../core/env.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -39,7 +40,7 @@ export const DEFAULT_AUTH_BASE = "https://auth.openai.com";
 export const CALLBACK_PORT = 1455;
 
 export function authFilePath(): string { return join(harnessHome(), "codex-auth.json"); }
-export function codexCliAuthPath(env: NodeJS.ProcessEnv = process.env): string { return env.TH_CODEX_CLI_AUTH ?? join(env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"); }
+export function codexCliAuthPath(env: NodeJS.ProcessEnv = process.env): string { return mphEnv("CODEX_CLI_AUTH", env) ?? join(env.CODEX_HOME ?? join(homedir(), ".codex"), "auth.json"); }
 
 export function decodeJwtPayload(token: string): Record<string, any> | null {
   try {
@@ -133,18 +134,18 @@ export class CodexAuth {
   readonly authBase: string;
   readonly refreshSkewMs: number;
   constructor(readonly env: NodeJS.ProcessEnv = process.env, opts: { authBase?: string; refreshSkewMs?: number } = {}) {
-    this.authBase = (opts.authBase ?? env.TH_CODEX_AUTH_BASE ?? DEFAULT_AUTH_BASE).replace(/\/$/, "");
+    this.authBase = (opts.authBase ?? mphEnv("CODEX_AUTH_BASE", env) ?? DEFAULT_AUTH_BASE).replace(/\/$/, "");
     this.refreshSkewMs = opts.refreshSkewMs ?? 60_000;
   }
 
   /** current credentials, refreshed if they expire within the skew */
   async get(force = false): Promise<CodexCredentials> {
     const c = this.cached ?? loadCredentials(this.env);
-    if (!c) throw new Error("no Codex credentials: run `th login` (or log in with the Codex CLI so ~/.codex/auth.json exists), or set TH_OPENAI_BASE_URL for an OpenAI-compatible upstream");
+    if (!c) throw new Error("no Codex credentials: run `mph login` (or log in with the Codex CLI so ~/.codex/auth.json exists), or set MPH_OPENAI_BASE_URL for an OpenAI-compatible upstream");
     this.cached = c;
     const expiring = c.expiresAt !== undefined && c.expiresAt <= Date.now() + this.refreshSkewMs;
     if (!force && !expiring) return c;
-    if (!c.refreshToken) { if (force || (c.expiresAt ?? Infinity) <= Date.now()) throw new Error("Codex access token expired and no refresh token available: run `th login`"); return c; }
+    if (!c.refreshToken) { if (force || (c.expiresAt ?? Infinity) <= Date.now()) throw new Error("Codex access token expired and no refresh token available: run `mph login`"); return c; }
     if (!this.inflight) this.inflight = this.refresh(c).finally(() => { this.inflight = null; });
     return this.inflight;
   }
@@ -153,7 +154,7 @@ export class CodexAuth {
 
   async refresh(c: CodexCredentials): Promise<CodexCredentials> {
     const r = await fetch(`${this.authBase}/oauth/token`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: c.refreshToken!, client_id: CLIENT_ID }) });
-    if (!r.ok) throw new Error(`Codex token refresh failed (${r.status}): ${(await r.text()).slice(0, 300)}; run \`th login\``);
+    if (!r.ok) throw new Error(`Codex token refresh failed (${r.status}): ${(await r.text()).slice(0, 300)}; run \`mph login\``);
     const j: any = await r.json();
     if (!j.access_token) throw new Error("Codex token refresh returned no access_token");
     const next = complete({ accessToken: j.access_token, refreshToken: j.refresh_token ?? c.refreshToken, idToken: j.id_token ?? c.idToken, expiresAt: typeof j.expires_in === "number" ? Date.now() + j.expires_in * 1000 : undefined, accountId: accountIdFromToken(j.access_token) ?? c.accountId, source: c.source });
@@ -163,7 +164,7 @@ export class CodexAuth {
   }
 
   /** PKCE login; returns and persists the credentials */
-  async login(cb: LoginCallbacks, callbackPort = Number(this.env.TH_CODEX_CALLBACK_PORT ?? CALLBACK_PORT)): Promise<CodexCredentials> {
+  async login(cb: LoginCallbacks, callbackPort = Number(mphEnv("CODEX_CALLBACK_PORT", this.env) ?? CALLBACK_PORT)): Promise<CodexCredentials> {
     const verifier = b64url(randomBytes(32));
     const challenge = b64url(createHash("sha256").update(verifier).digest());
     const state = randomBytes(16).toString("hex");
@@ -179,7 +180,7 @@ export class CodexAuth {
       if (u.searchParams.get("state") !== state) { res.writeHead(400).end("state mismatch"); return; }
       const code = u.searchParams.get("code");
       if (!code) { res.writeHead(400).end("missing code"); return; }
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<!doctype html><title>token-harness</title><p>Login complete. You can close this tab and return to the terminal.</p>");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" }).end("<!doctype html><title>my-poor-harness</title><p>Login complete. You can close this tab and return to the terminal.</p>");
       resolveCode(code);
     });
     const bound = await new Promise<boolean>((res) => { server.once("error", () => res(false)); server.listen(callbackPort, "127.0.0.1", () => res(true)); });

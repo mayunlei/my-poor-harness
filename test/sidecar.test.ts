@@ -3,14 +3,14 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-process.env.TOKEN_HARNESS_HOME = mkdtempSync(join(tmpdir(), "th-s-"));
+process.env.MPH_HOME = mkdtempSync(join(tmpdir(), "mph-s-"));
 const { Ledger } = await import("../src/core/ledger.js");
 const { buildReport, formatReport, compactionEffects } = await import("../src/sidecar/metrics.js");
 const { tune, calibrateKHat } = await import("../src/sidecar/tuner.js");
 const { knobsFor, loadKnobFile } = await import("../src/core/knobs.js");
 
 test("metrics: compaction effects and report; tuner starts a trial and records provenance", () => {
-  const ledger = new Ledger(join(process.env.TOKEN_HARNESS_HOME!, "ledger.jsonl"));
+  const ledger = new Ledger(join(process.env.MPH_HOME!, "ledger.jsonl"));
   let t = Date.parse("2026-10-01T00:00:00Z");
   for (let s = 0; s < 6; s++) for (let turn = 0; turn < 3; turn++) for (let step = 0; step < 15; step++) {
     const compact = step === 0 && turn > 0;

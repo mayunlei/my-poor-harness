@@ -1,4 +1,4 @@
-/** Interactive `login` shared by `th` and `th-proxy`: browser PKCE flow with manual paste fallback. */
+/** Interactive `login` shared by `mph` and `mph-proxy`: browser PKCE flow with manual paste fallback. */
 import { execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { CodexAuth, loadCredentials, planFromToken, authFilePath, clearCredentials } from "./codex_auth.js";
@@ -23,7 +23,7 @@ export async function runLogin(): Promise<void> {
 
 export function printWhoami(): void {
   const c = loadCredentials();
-  if (!c) { console.log("not logged in: run `th login` (or log in with the Codex CLI)"); return; }
+  if (!c) { console.log("not logged in: run `mph login` (or log in with the Codex CLI)"); return; }
   const left = c.expiresAt ? Math.round((c.expiresAt - Date.now()) / 60000) : undefined;
   console.log(`account ${c.accountId}${planFromToken(c.accessToken) ? ` (${planFromToken(c.accessToken)})` : ""} · source ${c.source}${c.source === "codex" ? " (~/.codex/auth.json)" : c.source === "file" ? ` (${authFilePath()})` : ""} · access token ${left === undefined ? "expiry unknown" : left > 0 ? `valid ${left} min` : `expired ${-left} min ago`}${c.refreshToken ? " · refresh token present" : " · no refresh token"}`);
 }

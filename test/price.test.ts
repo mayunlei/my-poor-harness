@@ -9,9 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
 
-const HOME = mkdtempSync(join(tmpdir(), "th-price-"));
-process.env.TOKEN_HARNESS_HOME = HOME;
-delete process.env.TH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.TH_PROVIDER;
+const HOME = mkdtempSync(join(tmpdir(), "mph-price-"));
+process.env.MPH_HOME = HOME;
+delete process.env.MPH_OPENAI_BASE_URL; delete process.env.OPENAI_BASE_URL; delete process.env.MPH_PROVIDER;
 
 const { Ledger, costEquiv } = await import("../src/core/ledger.js");
 const { fitPrice, formatPriceFit } = await import("../src/sidecar/price.js");

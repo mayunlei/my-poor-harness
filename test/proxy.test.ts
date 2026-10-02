@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, msg, call } from "./mock_model.js";
 
-process.env.TOKEN_HARNESS_HOME = mkdtempSync(join(tmpdir(), "th-p-"));
+process.env.MPH_HOME = mkdtempSync(join(tmpdir(), "mph-p-"));
 const { Proxy, sessionIdOf, substituteRecalls } = await import("../src/proxy/server.js");
 const { ArtifactStore } = await import("../src/core/artifacts.js");
 
@@ -51,7 +51,7 @@ test("proxy rewrites input, injects recall tool, substitutes recall outputs, log
 test("sessionIdOf prefers prompt_cache_key; substituteRecalls is a no-op without recall calls", () => {
   assert.equal(sessionIdOf({ prompt_cache_key: "abc" }), "abc");
   assert.ok(sessionIdOf({ input: [{ role: "user", content: "hi" }] }).startsWith("anon:"));
-  const store = new ArtifactStore(join(process.env.TOKEN_HARNESS_HOME!, "art"));
+  const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const r = substituteRecalls([{ type: "function_call", name: "x", call_id: "1", arguments: "{}" }, { type: "function_call_output", call_id: "1", output: "o" }], store);
   assert.equal(r.substituted, 0);
 });
