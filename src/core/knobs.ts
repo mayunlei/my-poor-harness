@@ -65,6 +65,7 @@ export const KNOB_SPECS = {
   answer_card_model: { default: false, description: "always use the small model for answer cards (default: rules first, model as fallback)" } as KnobSpec<boolean>,
   skill_index_budget: { default: 1500, min: 200, max: 8000, step: 100, description: "tokens of the skill index in the static prefix" } as KnobSpec<number>,
   project_doc_budget: { default: 4000, min: 0, max: 20000, step: 500, description: "tokens of AGENTS.md / CLAUDE.md loaded into the static prefix" } as KnobSpec<number>,
+  shell_login: { default: "cached", choices: ["cached", "always", "never"], description: "run(cmd) shell: cached = capture the login shell's env and functions once, then plain bash -c; always = bash -lc every time (correct, ~0.7s each); never = bash -c with no profile" } as KnobSpec<string>,
   t3_escalate_pass_rate: { default: 0.7, min: 0.3, max: 0.95, step: 0.05, description: "escalate a task class when cheap-model pass rate drops below this" } as KnobSpec<number>,
   // strategy: how a turn is organised (see src/harness/strategies)
   strategy: { default: "react", choices: ["react", "plan_verify"], description: "turn execution strategy" } as KnobSpec<string>,

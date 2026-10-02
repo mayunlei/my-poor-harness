@@ -18,7 +18,16 @@ import { sha1 } from "../core/items.js";
 import type { ToolDef } from "./providers.js";
 import { ALL_EXTRA_TOOLS, EXTRA_TOOLS, extraHandler, MULTI_TURN_ONLY, type MemoryToolContext } from "./tools_extra.js";
 
-export interface Job { id: string; cmd: string; proc: ChildProcess; buf: string; readOffset: number; exitCode: number | null; startedAt: number; lastOutputAt: number; logPath: string }
+export interface Job { id: string; cmd: string; proc: ChildProcess; buf: string; readOffset: number; exitCode: number | null; startedAt: number; lastOutputAt: number; logPath: string;
+  /** woken on new output and on exit, so a wait does not have to poll for it */
+  waiters: (() => void)[] }
+
+/** resolves on the job's next output or its exit */
+function nextEvent(job: Job): Promise<void> {
+  return new Promise((resolve) => job.waiters.push(resolve));
+}
+
+function notify(job: Job): void { const ws = job.waiters; job.waiters = []; for (const w of ws) w(); }
 
 export interface ToolContext extends Partial<MemoryToolContext> {
   cwd: string; knobs: Knobs; store: ArtifactStore; sessionId: string;
@@ -45,14 +54,83 @@ export const CORE_TOOL_DEFS: ToolDef[] = [
 /** job logs live under the harness home, never inside the user's repository */
 function jobsDir(_ctx: ToolContext): string { const d = join(harnessHome(), "jobs"); mkdirSync(d, { recursive: true }); return d; }
 
-export function startJob(ctx: ToolContext, cmd: string, cwd: string): Job {
+/**
+ * The login shell, paid once instead of once per command.
+ *
+ * `run` used to spawn `bash -lc`, which sources the user's profile every time. On
+ * this machine that is 682ms per command against 2ms for `bash -c` -- conda's init
+ * block, mostly -- so a turn that runs thirty commands spent twenty seconds doing
+ * nothing but starting shells. It looked like the tools were slow, or serialized.
+ *
+ * `-l` is there for a reason: the profile is what puts conda, nvm, pyenv and the
+ * rest on PATH, and `conda` is a shell *function*, not a binary. So instead of
+ * dropping it: capture the login shell's environment and its function definitions
+ * once per process, write the functions to a file, and run every command with plain
+ * `bash -c`, that environment, and BASH_ENV pointing at the functions -- which bash
+ * sources for non-interactive shells. `conda activate env && python ...` still works.
+ */
+export type ShellMode = "cached" | "always" | "never";
+interface Shell { args: (cmd: string) => string[]; env: NodeJS.ProcessEnv }
+
+let capture: Promise<{ delta: NodeJS.ProcessEnv }> | undefined;
+
+function bashCapture(script: string, timeoutMs = 20_000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const p = spawn("bash", ["-lc", script], { env: process.env, stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    p.stdout.on("data", (d) => (out += d));
+    const t = setTimeout(() => { try { p.kill("SIGKILL"); } catch { /* gone */ } reject(new Error("login shell timed out")); }, timeoutMs);
+    t.unref?.();
+    p.on("error", (e) => { clearTimeout(t); reject(e); });
+    p.on("close", (code) => { clearTimeout(t); code === 0 ? resolve(out) : reject(new Error(`login shell exited ${code}`)); });
+  });
+}
+
+/** what the profile adds or changes, relative to the environment we started from */
+async function captureLoginShell(): Promise<{ delta: NodeJS.ProcessEnv }> {
+  const before = { ...process.env };
+  const json = await bashCapture(`${JSON.stringify(process.execPath)} -e 'process.stdout.write(JSON.stringify(process.env))'`);
+  const after = JSON.parse(json) as Record<string, string>;
+  const delta: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(after)) {
+    if (["PWD", "OLDPWD", "SHLVL", "_"].includes(k)) continue;
+    if (before[k] !== v) delta[k] = v;
+  }
+  let fns = "";
+  try { fns = await bashCapture("declare -f"); } catch { /* a profile with no functions is fine */ }
+  if (fns.trim()) {
+    const file = join(harnessHome(), "shell-functions.sh");
+    mkdirSync(dirname(file), { recursive: true });
+    // the profile's own BASH_ENV, if it had one, still gets sourced
+    const prior = before.BASH_ENV ?? after.BASH_ENV;
+    writeFileSync(file, (prior && prior !== file ? `[ -f ${JSON.stringify(prior)} ] && . ${JSON.stringify(prior)}\n` : "") + fns, { mode: 0o600 });
+    delta.BASH_ENV = file;
+  }
+  return { delta };
+}
+
+async function shellFor(mode: string): Promise<Shell> {
+  if (mode === "always") return { args: (cmd) => ["-lc", cmd], env: process.env };
+  if (mode === "never") return { args: (cmd) => ["-c", cmd], env: process.env };
+  capture ??= captureLoginShell().catch(() => null as any);
+  const got = await capture;
+  // a capture that failed falls back to correctness, not to a broken PATH
+  if (!got) return { args: (cmd) => ["-lc", cmd], env: process.env };
+  return { args: (cmd) => ["-c", cmd], env: { ...process.env, ...got.delta } };
+}
+
+/** for tests: forget the captured login shell */
+export function resetShellCache(): void { capture = undefined; }
+
+export async function startJob(ctx: ToolContext, cmd: string, cwd: string): Promise<Job> {
+  const sh = await shellFor(String(ctx.knobs.shell_login ?? "cached"));
   const id = "job_" + sha1(cmd + Date.now()).slice(0, 6);
   const logPath = resolve(jobsDir(ctx), id + ".log");
-  const proc = spawn("bash", ["-lc", cmd], { cwd, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
-  const job: Job = { id, cmd, proc, buf: "", readOffset: 0, exitCode: null, startedAt: Date.now(), lastOutputAt: Date.now(), logPath };
-  const onData = (d: Buffer) => { const s = d.toString("utf8"); job.buf += s; job.lastOutputAt = Date.now(); appendFileSync(logPath, s); if (job.buf.length > 4_000_000) job.buf = job.buf.slice(-2_000_000); };
+  const proc = spawn("bash", sh.args(cmd), { cwd, env: sh.env, stdio: ["ignore", "pipe", "pipe"] });
+  const job: Job = { id, cmd, proc, buf: "", readOffset: 0, exitCode: null, startedAt: Date.now(), lastOutputAt: Date.now(), logPath, waiters: [] };
+  const onData = (d: Buffer) => { const s = d.toString("utf8"); job.buf += s; job.lastOutputAt = Date.now(); appendFileSync(logPath, s); if (job.buf.length > 4_000_000) job.buf = job.buf.slice(-2_000_000); notify(job); };
   proc.stdout?.on("data", onData); proc.stderr?.on("data", onData);
-  proc.on("close", (code) => { job.exitCode = code ?? -1; });
+  proc.on("close", (code) => { job.exitCode = code ?? -1; notify(job); });
   ctx.jobs.set(id, job);
   return job;
 }
@@ -68,7 +146,10 @@ export async function waitJob(job: Job, opts: { until?: string; silenceS?: numbe
     if (re && re.test(fresh)) return { text: fresh, status: `matched /${opts.until}/` };
     if (opts.silenceS && Date.now() - job.lastOutputAt > opts.silenceS * 1000 && fresh.length > 0) return { text: fresh, status: `silent ${opts.silenceS}s` };
     if (Date.now() - t0 > opts.maxS * 1000) return { text: fresh, status: `still running after ${opts.maxS}s` };
-    await sleep(300);
+    // wake on the next output or on exit; the 300ms tick is only there to re-check
+    // the silence and deadline conditions, which no event announces. Polling alone
+    // cost every command up to 300ms of doing nothing.
+    await Promise.race([nextEvent(job), sleep(300)]);
   }
 }
 
@@ -86,10 +167,10 @@ export async function executeTool(ctx: ToolContext, name: string, args: any, cal
       case "run": {
         const cmd = String(args.cmd ?? ""); const cwd = args.cwd ? resolve(ctx.cwd, String(args.cwd)) : ctx.cwd;
         if (!cmd) return "[run] missing cmd";
-        if (args.background) { const job = startJob(ctx, cmd, cwd); ctx.onEvent?.({ kind: "job", detail: `${job.id} started: ${cmd.slice(0, 80)}` }); return `[background job ${job.id} started; use wait(job="${job.id}")]`; }
+        if (args.background) { const job = await startJob(ctx, cmd, cwd); ctx.onEvent?.({ kind: "job", detail: `${job.id} started: ${cmd.slice(0, 80)}` }); return `[background job ${job.id} started; use wait(job="${job.id}")]`; }
         const key = cwd + "\u0000" + cmd;
         if (ctx.knobs.idempotent_cmd_cache && IDEMPOTENT_RE.test(cmd)) { const c = ctx.cmdCache.get(key); if (c && Date.now() - c.at < 120_000 && ctx.filesTouched.size === (c as any).touched) { ctx.onEvent?.({ kind: "dedupe", detail: cmd.slice(0, 60) }); return `[unchanged: same command ran ${Math.round((Date.now() - c.at) / 1000)}s ago with no edits since]\n` + c.text; } }
-        const job = startJob(ctx, cmd, cwd);
+        const job = await startJob(ctx, cmd, cwd);
         const r = await waitJob(job, { maxS: Number(args.timeout_s ?? ctx.knobs.blocking_exec_timeout_s) });
         ctx.jobs.delete(job.id);
         if (r.status.startsWith("still running")) { ctx.jobs.set(job.id, job); return `[timeout after ${args.timeout_s ?? ctx.knobs.blocking_exec_timeout_s}s; job ${job.id} still running — use wait(job="${job.id}") or run with background=true]\n` + shaped(ctx, r.text, cmd); }
