@@ -302,6 +302,12 @@ def main() -> int:
         t1 = time.time()
         # like the official SWE-bench harness: files touched by the hidden test patch are reset to the
         # base version first, so solver edits to those tests cannot block the test patch
+        # the solver may have committed (or stashed) its work: judge the tree against the base commit, like SWE-bench
+        subprocess.run(["git", "stash", "pop"], cwd=str(ws), capture_output=True) if subprocess.run(["git", "stash", "list"], cwd=str(ws), capture_output=True, text=True).stdout.strip() else None
+        base = json.loads((adir / "case_meta.json").read_text())["base_commit"]
+        if subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(ws), capture_output=True, text=True).stdout.strip() != base:
+            subprocess.run(["git", "reset", "--soft", base], cwd=str(ws), capture_output=True)
+            subprocess.run(["git", "reset", "-q"], cwd=str(ws), capture_output=True)
         tp = json.loads((adir / "case_meta.json").read_text()).get("test_patch", "")
         tfiles = sorted(set(re.findall(r"^\+\+\+ b/(\S+)", tp, re.M)) | set(re.findall(r"^--- a/(\S+)", tp, re.M)))
         for tf in tfiles:
