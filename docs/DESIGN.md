@@ -1,5 +1,7 @@
 # Token Harness 设计稿 v0.3
 
+> 多轮会话、记忆、Skill 与 CLI 的下一阶段设计见 [MEMORY_DESIGN.md](MEMORY_DESIGN.md)。
+
 > 目标：做一个给编码 agent 用的 harness，把完成同样任务所需的 token 降一个数量级。
 > 先服务 Codex（Desktop / CLI），再做成自有循环，兼容 Claude Code 等客户端。
 > 日期：2026-10-01。数据来源：本机 2128 个 Codex 会话（2026-03 至 2026-10），`~/.codex/sessions`。
