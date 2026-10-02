@@ -26,7 +26,9 @@ export interface LedgerRow {
   delta_new?: number;
   // savings events, then the phases a strategy goes through (see src/harness/strategies)
   event?: "compact" | "keep" | "fork" | "shape" | "dedupe" | "wait" | "recall" | "poll_collapse" | "delegate" | "merge" | "knob_change" | "response"
-        | "plan" | "step" | "verify" | "argue" | "replan" | "strategy";
+        | "plan" | "step" | "verify" | "argue" | "replan" | "strategy"
+        // multi-turn: the turn gate, memory recall/writes, and a broken user-words invariant
+        | "gate" | "memory" | "fidelity";
   tool_kind?: string;
   idle_s?: number;
   cache_state?: "warm" | "cold" | "unknown";

@@ -364,7 +364,8 @@ export function rewrite(input: any[], ctx: RewriteContext): { input: any[]; stat
       }
     }
     if (i < boundary) {
-      if (it.kind === "output" && k.stub_old_outputs) { foldedItems.push(it); out.push(stubFor(it, callsById, store, state.stubs)); folded++; continue; }
+      // a loaded skill is the model's operating manual for this turn: never fold it mid-turn
+      if (it.kind === "output" && k.stub_old_outputs && !(it.tool === "skill" && it.text.startsWith("[skill "))) { foldedItems.push(it); out.push(stubFor(it, callsById, store, state.stubs)); folded++; continue; }
       if (it.kind === "other" && k.stub_old_outputs && it.raw?.type === "agent_message" && Array.isArray(it.raw.content)) {
         // Codex multi-agent traffic (spawn_agent / send_message). Outside the window the payload is dead weight:
         // text parts go to the artifact store (recallable); encrypted parts cannot be recalled and are dropped.

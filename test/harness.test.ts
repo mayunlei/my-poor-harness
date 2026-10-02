@@ -14,7 +14,7 @@ const { ArtifactStore } = await import("../src/core/artifacts.js");
 const { resolveKnobs } = await import("../src/core/knobs.js");
 const { OpenAIResponsesClient } = await import("../src/harness/providers.js");
 
-test("harness turn: tools run, window folds, next turn rebuilds with digest; fork/merge", async () => {
+test("single-task turn: tools run, window folds, next turn rebuilds with digest; fork/merge", async () => {
   const ws = mkdtempSync(join(tmpdir(), "mph-ws-"));
   writeFileSync(join(ws, "a.py"), "def f():\n    return 1\n");
   const mock = await startMock((body, n) => {
@@ -36,7 +36,7 @@ test("harness turn: tools run, window folds, next turn rebuilds with digest; for
   const store = new ArtifactStore(join(process.env.MPH_HOME!, "art"));
   const s = newSession(ws, "t1"); saveSession(s);
   const events: string[] = [];
-  const r1 = await runTurn({ session: s, userText: "make f return 2", knobs, store, ledger, router, onEvent: (e) => events.push(e.kind + ":" + e.detail) });
+  const r1 = await runTurn({ session: s, userText: "make f return 2", knobs, store, ledger, router, multiTurn: false, onEvent: (e) => events.push(e.kind + ":" + e.detail) });
   assert.equal(r1.text, "Done: a.py now returns 2.");
   assert.equal(r1.steps, 6);
   assert.equal(readFileSync(join(ws, "a.py"), "utf8"), "def f():\n    return 2\n");
@@ -45,7 +45,7 @@ test("harness turn: tools run, window folds, next turn rebuilds with digest; for
   assert.ok(s.window.length > 0 && s.window.length <= 2 * knobs.window, `window size ${s.window.length}`);
   assert.ok(s.window.every((x: any) => x.type === "function_call" || x.type === "function_call_output"));
   assert.ok(s.state.filesTouched.some((f) => f.endsWith("a.py")));
-  const r2 = await runTurn({ session: s, userText: "what did you change?", knobs, store, ledger, router });
+  const r2 = await runTurn({ session: s, userText: "what did you change?", knobs, store, ledger, router, multiTurn: false });
   assert.equal(r2.text, "second turn answer");
   // wait() blocked inside harness: the model made exactly one wait call and got "done"
   const waitReq = mock.requests[4]; const waitOut = waitReq.input.at(-1).output as string;

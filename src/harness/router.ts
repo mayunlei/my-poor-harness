@@ -6,6 +6,7 @@
 import type { Knobs } from "../core/knobs.js";
 import { Ledger } from "../core/ledger.js";
 import { clientFor, type ModelClient } from "./providers.js";
+import { resolveModels, type ResolvedModels } from "../upstream/config.js";
 
 export type Tier = "T1" | "T2" | "T3" | "T4";
 
@@ -16,13 +17,17 @@ export class Router {
   private passStats = new Map<string, { pass: number; fail: number }>();
   constructor(readonly knobs: Knobs, readonly ledger: Ledger) {}
 
+  private models?: ResolvedModels;
+  /** models per tier: knob → config.json → provider default (gpt-5.6-luna as the small model on ChatGPT OAuth) */
+  resolved(): ResolvedModels { return (this.models ??= resolveModels(this.knobs)); }
+
   route(tier: Tier, phase: "plan" | "execute" | "summarize" = "execute"): Route {
-    const k = this.knobs;
+    const k = this.knobs; const m = this.resolved();
     switch (tier) {
-      case "T1": return { tier, model: k.small_model, effort: "low", maxSteps: 1 };
-      case "T2": return { tier, model: k.small_model, effort: k.effort_summarize, maxSteps: 1 };
-      case "T3": return { tier, model: k.mid_model, effort: "medium", maxSteps: 25 };
-      default: return { tier, model: k.main_model, effort: phase === "plan" ? k.effort_plan : k.effort_execute, maxSteps: 200 };
+      case "T1": return { tier, model: m.small, effort: "low", maxSteps: 1 };
+      case "T2": return { tier, model: m.small, effort: k.effort_summarize, maxSteps: 1 };
+      case "T3": return { tier, model: m.mid, effort: "medium", maxSteps: 25 };
+      default: return { tier, model: m.main, effort: phase === "plan" ? k.effort_plan : k.effort_execute, maxSteps: 200 };
     }
   }
 

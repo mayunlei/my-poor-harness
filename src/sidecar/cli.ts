@@ -1,3 +1,4 @@
+import { resolveModels } from "../upstream/config.js";
 import { Ledger } from "../core/ledger.js";
 import { buildReport, formatReport } from "./metrics.js";
 import { tune } from "./tuner.js";
@@ -19,7 +20,7 @@ else if (cmd === "price") {
   // spends real quota, so: dry run unless --go, and --dry-run always wins
   const models = (opt("--models", "") ?? "").split(",").map((s) => s.trim()).filter(Boolean);
   const r = await priceProbe({
-    models: models.length ? models : [knobsFor({}).main_model],
+    models: models.length ? models : [resolveModels(knobsFor({})).main],
     n: Number(opt("--n", "8")), settleS: Number(opt("--settle", "20")), effort: opt("--effort", "medium")!,
     pollEveryS: Number(opt("--poll-every", "5")), maxWaitS: Number(opt("--max-wait", "300")),
     go: args.includes("--go") && !args.includes("--dry-run"),

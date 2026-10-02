@@ -130,3 +130,16 @@ test("harness client and mph-proxy run tool loops over a chat-only endpoint", as
   assert.equal(p.stats().responses, 1);
   srv.closeAllConnections(); srv.close(); await m.close();
 });
+
+test("chat adapter: low-effort calls turn Qwen thinking off on DashScope only", async () => {
+  const { chatResponses } = await import("../src/upstream/chat.js");
+  const seen: any[] = [];
+  const realFetch = globalThis.fetch;
+  (globalThis as any).fetch = async (_url: string, init: any) => { seen.push(JSON.parse(init.body)); return new Response(JSON.stringify({ id: "x", choices: [{ message: { content: "{}" }, finish_reason: "stop" }], usage: {} }), { status: 200, headers: { "content-type": "application/json" } }); };
+  try {
+    await chatResponses("https://coding.dashscope.aliyuncs.com/v1", "k", { model: "q", input: "hi", reasoning: { effort: "low" } }, { stream: false });
+    await chatResponses("https://coding.dashscope.aliyuncs.com/v1", "k", { model: "q", input: "hi", reasoning: { effort: "high" } }, { stream: false });
+    await chatResponses("https://api.example.com/v1", "k", { model: "q", input: "hi", reasoning: { effort: "low" } }, { stream: false });
+  } finally { globalThis.fetch = realFetch; }
+  assert.deepEqual(seen.map((b) => b.enable_thinking), [false, undefined, undefined]);
+});

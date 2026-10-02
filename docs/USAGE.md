@@ -7,7 +7,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 |---|---|---|
 | **ctx-core** | pure, idempotent rewrite of a Responses API `input` array: output shaping that keeps failure fields, stubs for folded outputs (`recall(id)` to expand), poll-chain collapse, read dedupe, fixed-prefix diet, batch folding with hysteresis, cache-aware compaction judge | `src/core` |
 | **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `mph-proxy` |
-| **harness** | own agent loop: per-turn rebuild (fixed prompt + state digest + folded window), blocking `run`/`wait` instead of polling, read cache, `delegate` to cheaper models with escalation, session **fork / merge / discard**, map-reduce with fresh contexts | `mph` |
+| **harness** | own agent loop for long conversations: an append-only transcript that keeps every user word, a turn gate (carry the last turn's work or rebuild), global long-term **memory** with recall, **skills** (SKILL.md) and CLI tools, blocking `run`/`wait` instead of polling, `delegate` to cheaper models, session **fork / merge / discard** | `mph` |
 | **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `mph-sidecar` |
 | **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `mph-sidecar price`, `price-probe` |
 | **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `mph compare` scores them on an external oracle | `mph run --strategy`, `mph compare` |
@@ -19,7 +19,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 52 tests: core, harness loop, strategies, proxy, upstream (OAuth/transport, chat adapter), meter, price, sidecar, dashboard
+npm test                                  # 69 tests: core, harness loop, multi-turn (transcript, memory, gate, skills), strategies, proxy, upstream, meter, price, sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
@@ -89,25 +89,79 @@ Notes
 ## 2. The harness
 
 ```bash
-npx tsx src/harness/cli.ts chat --cwd ~/Program/sql --model gpt-5.6-sol     # built-in Codex upstream by default; see §0 for your own endpoint
+mph chat --cwd ~/Program/sql                       # interactive; built-in Codex upstream by default (§0 for your own endpoint)
+mph run --cwd . "fix the failing test in tests/test_x.py"
+echo "what changed since yesterday?" | mph run - --resume-last --json   # scriptable: JSON events + a result line
+mph map --task "analyze ticker {item} and write report_{item}.md" --items AAPL,MSFT,NVDA --parallel 3
 ```
 
-Inside `chat`: `/fork <name>` (branch for a side question), `/merge <branch>` (bring the branch's state delta back as a merged block), `/discard`, `/switch`, `/sessions`, `/knobs k=v`, `/profile long_task|qa_only|batch`, `/compact`, `/stats`.
+`mph run` exit codes: 0 done · 2 step limit · 3 model error · 4 a user message was not verbatim in a request (should never happen).
 
-One-shot and batch:
+### What the model sees each turn
+
+Design: [MEMORY_DESIGN.md](MEMORY_DESIGN.md). Segments, most stable first so the prefix cache survives across turns:
+
+| segment | content | changes |
+|---|---|---|
+| S1 instructions | fixed prompt, skill index, AGENTS.md / CLAUDE.md | almost never |
+| S2 transcript | every earlier user message **verbatim**; recent answers verbatim, older ones as cards with `recall(id)` | append-only, re-cut once per epoch (`answer_verbatim_turns`) |
+| S3 carried work | the previous turn's tool calls and outputs (folded) | only when the gate says *continue* |
+| S4 briefing | workspace state, merged branches, memories, preloaded skills | every turn, small |
+| S5 | the new message, verbatim | |
+| S6 | this turn's tool steps, append-only, batch-folded over `turn_budget` | |
+
+**User words are never lost.** Every message is written to `~/.mph/harness/transcripts/<session>.jsonl` before anything else runs; the user's own words stay verbatim in every later request of the session. Only large pasted blocks (code fences, logs, tracebacks over `paste_externalize_tokens`) become a stub with head/tail preview and `recall(id)`, and only after their epoch has passed. Each request is checked; a violation is logged as a `fidelity` ledger row and makes `mph run` exit 4.
+
+**The gate** decides at the start of each turn. Rules first: a user command (`/continue`, `/new`, `--continue`, `--new`), nothing to carry, a cold cache (rebuild), a back-reference or the same files (continue), clear topic overlap or a clear new topic. Only the ambiguous zone, or more memory candidates than slots, calls the small model once (decision + memory rerank + skill pick). On timeout or bad output the rules decide; ambiguous means continue.
+
+### Memory
+
+Global (shared by every project), in `~/.mph/memory.db` (SQLite + FTS5, Chinese and English). Typed entries: goal, constraint, preference, decision, fact, attempt, open, procedure; each with links (files, artifacts, URLs) and, for the user's constraints and preferences, the user's exact sentence.
+
+- Written three ways: rules turn explicit user instructions ("记住…", "不要…", "always…") into pinned constraints/preferences with the quote; the model calls `remember(...)`; the small model extracts up to 5 items at turn end, deduplicated against similar entries (new / update / supersede).
+- Recalled in three layers: pinned entries always (`memory_l0_budget`), up to `memory_l1_max` one-line index entries picked for the message, at most two full entries; the model looks up the rest with `memory_search` / `memory_get`. A lookup of an entry that was not shown is logged as a recall miss.
+- Code facts linked to a file are marked stale when the file changes.
 
 ```bash
-npx tsx src/harness/cli.ts run --cwd . "fix the failing test in tests/test_x.py"
-npx tsx src/harness/cli.ts map --task "analyze ticker {item} and write report_{item}.md" --items AAPL,MSFT,NVDA --parallel 3
+mph config memory_recall=off        # stop injecting and searching memory (writes continue)
+mph config memory_write=off         # stop recording
+mph memory list | search <q> | get <id> | pin <id> | unpin <id> | forget <id> | export [file] | import <file> | gc
 ```
 
-What the model sees each turn: a ~450-token fixed prompt, the state digest (files touched, last test status, errors seen, notes from `state_update`, merged blocks), the last `window` observations of the previous turn as stubs, and the new message. Inside a turn the history is append-only; ctx-core folds in batches when the variable part exceeds `turn_budget`.
+In `chat`: `/memory …` (same subcommands), `/skills`, `/continue`, `/new`.
 
-Tools: `run` (blocking, timeout; `background=true` returns a job), `wait(job, until|silence_s|max_s)` (waits inside the harness; the model is never woken by empty polls), `read` (range, dedupe), `edit`, `write_file`, `recall`, `delegate(task, inputs, acceptance)` (T3 worker in a fresh context on `mid_model`, escalates to `main_model` if the acceptance command fails), `state_update`.
+### Skills and CLI tools
 
-Model tiers (`src/harness/router.ts`): T0 deterministic (shapers, dedupe), T1/T2 `small_model` (judge calibration, optional turn summary with `use_model_summary=true`), T3 `mid_model` (delegated subtasks, map items), T4 `main_model` (main loop). Routing only happens at task boundaries so the main loop keeps one model and its prefix cache.
+Skills are folders with a `SKILL.md` (`name`, `description` frontmatter; optional `requires: [gh, jq]`). Found in the project (`.agents/skills`, `.claude/skills`, `.codex/skills`, `.mph/skills`) and for the user (`~/.mph/skills`, `~/.agents/skills`, `~/.claude/skills`, `~/.codex/skills`, plus `MPH_SKILLS_PATH`); project wins on a name clash. The index sits in the static prefix; `skill(name)` loads the body, which stays unfolded for the rest of the turn; the gate may preload one. External capabilities are CLIs the model runs with `run`, documented by skills, so adding one never changes the cached prefix.
 
-Anthropic models work too (`--model claude-...` with `ANTHROPIC_API_KEY`); the adapter maps items to Messages API blocks.
+```bash
+mph skill list | show <name>
+```
+
+### Models
+
+| tier | used for | default on ChatGPT OAuth | default on your own endpoint |
+|---|---|---|---|
+| main | the conversation | `gpt-5.6-sol` | `main_model` in config, else `MPH_MODEL` |
+| mid | `delegate` workers, `map` items | `gpt-5.5` | the main model |
+| small | gate, memory extraction, answer cards | `gpt-5.6-luna` | the main model |
+
+ChatGPT accounts reject `gpt-5.4`, `gpt-5.4-mini` and the other `*-mini` models on the Codex backend (checked 2026-10-02), so the small model there is `gpt-5.6-luna`. Change any tier with `mph config main_model=… mid_model=… small_model=…` or per session with `/knobs small_model=…`. On DashScope, low-effort calls (all small-model work) run with Qwen thinking off.
+
+### Tools
+
+`read` (range, dedupe), `write_file`, `edit`, `multi_edit` (several replacements, all or nothing), `ls`, `grep` (ripgrep, grouped by file, capped), `run` (blocking; `background=true` + `wait` for long jobs), `recall`, `delegate`, `memory_search`, `memory_get`, `remember`, `skill`. No command approval or sandbox: commands run with your permissions.
+
+Strategies (`plan_verify`) and `delegate` workers keep the single-task loop: fixed prompt, state digest, folded window, no transcript or memory.
+
+### Multi-turn golden set
+
+```bash
+MPH_OPENAI_BASE_URL=… MPH_OPENAI_API_KEY=… MPH_OPENAI_WIRE_API=chat \
+  npx tsx bench/multiturn/run.ts --model qwen3.7-plus [--arms full,hybrid,hybrid-nomem] [--cases id,…] [--parallel 4]
+```
+
+15 scripted conversations (`bench/multiturn/cases.json`): references back, constraints that must hold later, preferences, topic switch and return, a detail from a long paste several turns later, a failed approach not to repeat, decisions and preferences across sessions, verbatim recall of the user's first sentence, following a skill. Checks run commands in the workspace, match the answer, or ask a judge (majority of 3). Arms: `full` (keep everything, no memory), `hybrid` (default), `hybrid-nomem`.
 
 ## 3. Sidecar
 
@@ -373,12 +427,16 @@ prices is worse than no router.
 ```
 src/core      items, tokens, artifacts, shapers, knobs, ledger, cache_state, judge, summary, rewrite
 src/proxy     server (Responses proxy + recall), cli
-src/harness   providers (OpenAI Responses / Anthropic), tools, session (DAG, fork/merge), router, loop, cli
+src/harness   providers (OpenAI Responses / Anthropic), tools + tools_extra, session (DAG, fork/merge), router, gate, assemble, loop, cli
+src/transcript  append-only transcript, paste detection, epoch rendering, answer cards, user-words fidelity check
+src/memory    store (node:sqlite + FTS5), recall (candidates, L0/L1/L2), write (rules, extraction, dedupe)
+src/skills    discovery, frontmatter, index, project instructions
 src/harness/strategies  react (baseline), plan_verify (planner / worker / independent verifier)
 src/harness/compare.ts  strategy A/B scored by each task's own acceptance command
 src/sidecar   metrics, tuner, price (aggregate estimator with refusals), cli
 src/dashboard live (ledger fold + tailer), ui (the page), server (SSE), cli
 src/upstream  meter (quota/billing headers), price_probe (the controlled experiment), config (provider resolution), codex_auth (OAuth PKCE login, refresh, credential files), codex (transport), chat (Responses ⇄ Chat Completions adapter), sse (collector), login_cli
+bench/multiturn/       multi-turn golden set: cases.json + run.ts (arms full / hybrid / hybrid-nomem)
 bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: arms off / on / tight, same model, judged with hidden tests
 src/bench     replay
 bench/        codex_session_stats.py (the analysis that produced DESIGN.md §2)
@@ -388,6 +446,6 @@ scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
 .github/      ci and release workflows
 ```
 
-Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `proxy/sessions/`, `harness/sessions/`, `sidecar/`). Override with `MPH_HOME`.
+Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `memory.db`, `skills/`, `proxy/sessions/`, `harness/sessions/`, `harness/transcripts/`, `jobs/`, `sidecar/`). Override with `MPH_HOME`.
 
 Multi-agent Codex sessions: `agent_message` items (spawn_agent / send_message traffic, payload encrypted) are folded outside the window like tool outputs: a one-line stub with the message header; text payloads go to the artifact store and are recallable, encrypted payloads are dropped.

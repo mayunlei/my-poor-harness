@@ -12,6 +12,12 @@ import { Router } from "./router.js";
 import { initTokenizer } from "../core/tokens.js";
 import { runLogin, printWhoami, runLogout } from "../upstream/login_cli.js";
 import { loadConfigFile, saveConfigFile, configPath, resolveUpstream, describeUpstream, type Provider } from "../upstream/index.js";
+import { resolveModels, memorySettings } from "../upstream/config.js";
+import { MemoryStore, MEMORY_TYPES, type MemoryType } from "../memory/store.js";
+import { detailBlock, l1Line } from "../memory/recall.js";
+import { discoverSkills, loadSkillBody, skillLine } from "../skills/index.js";
+import { projectOf } from "../memory/store.js";
+import type { GateAction } from "./gate.js";
 
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "chat";
@@ -19,7 +25,7 @@ const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 
 const flag = (n: string) => args.includes(n);
 
 function printEvent(e: { kind: string; detail: string }) {
-  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!" }[e.kind] ?? "•";
+  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!", gate: "◇", skill: "✦", memory_miss: "?" }[e.kind] ?? "•";
   process.stderr.write(`  ${tag} ${e.detail}\n`);
 }
 
@@ -27,13 +33,17 @@ async function chat(session: SessionData) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q: string) => new Promise<string>((r) => rl.question(q, r));
   console.log(`session ${session.id} (${session.title}) in ${session.cwd}. /help for commands.`);
+  let pendingGate: GateAction | undefined;
   for (;;) {
     const line = (await ask(`\n[${session.title}] you> `)).trim();
     if (!line) continue;
     if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "help") { console.log("/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "continue" || c === "new") { pendingGate = c === "continue" ? "continue" : "rebuild"; console.log(`next turn will ${c === "continue" ? "carry the previous turn's work" : "start from the briefing only"}`); continue; }
+      if (c === "memory") { memoryCommand(rest, true); continue; }
+      if (c === "skills") { for (const sk of discoverSkills(session.cwd, projectOf(session.cwd))) console.log(skillLine(sk, 120)); continue; }
       if (c === "fork") { const child = forkSession(session, arg || `fork-${session.turns.length}`); console.log(`forked → ${child.id} (${child.title}); now on branch`); session = child; continue; }
       if (c === "merge") { const b = findSession(arg); if (!b) { console.log("no such branch"); continue; } const blk = mergeSession(b, session); console.log(`merged "${b.title}" into ${session.title}:\n${blk.text}`); continue; }
       if (c === "discard") { if (!session.parent) { console.log("not a branch"); continue; } discardSession(session); const p = loadSession(session.parent)!; console.log(`discarded; back on ${p.title}`); session = p; continue; }
@@ -58,12 +68,14 @@ async function chat(session: SessionData) {
     const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
     const strat = strategyFor(knobs.strategy);
     const r = strat.name === "react"
-      ? await runTurn({ session, userText: line, knobs, store, ledger, router, onText: (t) => process.stdout.write(t), onEvent: printEvent })
+      ? await runTurn({ session, userText: line, knobs, store, ledger, router, gateAction: pendingGate, onText: (t) => process.stdout.write(t), onEvent: printEvent })
       : await strat.run({ session, userText: line, knobs, store, ledger, router, onEvent: printEvent });
     if (strat.name !== "react") process.stdout.write(r.text + "\n");
     else if (!r.text.includes("[model error]")) process.stdout.write("\n");
     else console.log(r.text);
-    console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output} · cost≈${Math.round(r.costEquiv)}]`);
+    pendingGate = undefined;
+    const mem = (r as any).memory ? ` · memory shown ${(r as any).memory.recalled.length} written ${(r as any).memory.written.length}` : "";
+    console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output} · cost≈${Math.round(r.costEquiv)}${mem}]`);
   }
   rl.close();
 }
@@ -73,14 +85,18 @@ async function main() {
   const cwd = resolve(opt("--cwd", process.cwd())!);
   if (cmd === "help" || flag("--help")) {
     console.log(`mph chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]   interactive session with fork/merge
-mph run "task" [--session id] [--cwd dir] [--prompt-file f] [--max-steps n]   one-shot turn
+mph run "task" | mph run - | mph run --prompt-file f   one turn; [--session id | --resume-last] [--cwd dir] [--max-steps n] [--continue|--new] [--json]
+                                                       exit codes: 0 done · 2 step limit · 3 model error · 4 user-words fidelity violated
+mph memory list [--all] [--type t] | search <q> | get <id> | pin <id> | unpin <id> | forget <id> | export [file] | import <file> | gc
+mph skill list | show <name>
 mph map --task "..." (--items a,b,c | --items-file f) [--parallel 3]   map-reduce: fresh context per item
 mph compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]   same tasks, every strategy, scored by the task's own acceptance command
 mph strategies                                         list execution strategies
 mph sessions | mph fork <id> <name> | mph merge <branch> <main> | mph discard <id>
 mph knobs [--project p] [k=v ...]
 mph login | mph logout | mph whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
-mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_api=responses|chat] [codex_models=a,b]   show / set ~/.mph/config.json`); return;
+mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_api=responses|chat] [codex_models=a,b]
+           [main_model=...] [mid_model=...] [small_model=...] [memory_recall=on|off] [memory_write=on|off]   show / set ~/.mph/config.json`); return;
   }
   if (cmd === "login") { await runLogin(); return; }
   if (cmd === "logout") { runLogout(); return; }
@@ -97,14 +113,31 @@ mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire
         else if (k === "wire_api") { if (v && v !== "responses" && v !== "chat") throw new Error("wire_api must be responses or chat"); cfg.wire_api = (v || undefined) as any; }
         else if (k === "codex_base_url") cfg.codex = { ...(cfg.codex ?? {}), base_url: v || undefined };
         else if (k === "codex_models") cfg.codex = { ...(cfg.codex ?? {}), models: v.split(",").map((m) => m.trim()).filter(Boolean) };
-        else throw new Error(`unknown config key ${k} (provider, base_url, api_key, wire_api, codex_base_url, codex_models)`);
+        else if (k === "main_model" || k === "mid_model" || k === "small_model") (cfg as any)[k] = v || undefined;
+        else if (k === "memory_recall" || k === "memory_write") {
+          const on = ["on", "true", "1", "yes"].includes(v.toLowerCase()); const off = ["off", "false", "0", "no"].includes(v.toLowerCase());
+          if (!on && !off) throw new Error(`${k} must be on or off`);
+          cfg.memory = { ...(cfg.memory ?? {}), [k === "memory_recall" ? "recall" : "write"]: on };
+        }
+        else throw new Error(`unknown config key ${k} (provider, base_url, api_key, wire_api, codex_base_url, codex_models, main_model, mid_model, small_model, memory_recall, memory_write)`);
       }
       saveConfigFile(cfg); console.log(`saved ${configPath()}`);
     }
     const cfg = loadConfigFile();
     console.log(JSON.stringify({ ...cfg, api_key: cfg.api_key ? "***" : undefined }, null, 2));
     console.log(`effective upstream: ${describeUpstream(resolveUpstream())}`);
+    const m = resolveModels(knobsFor({ project: cwd }));
+    console.log(`models: main ${m.main} (${m.source.main}) · mid ${m.mid} (${m.source.mid}) · small ${m.small} (${m.source.small})`);
+    const ms = memorySettings();
+    console.log(`memory (global): recall ${ms.recall ? "on" : "off"} · write ${ms.write ? "on" : "off"}`);
     return;
+  }
+  if (cmd === "memory") { memoryCommand(args.slice(1), false); return; }
+  if (cmd === "skill" || cmd === "skills") {
+    const sub = args[1] ?? "list"; const skills = discoverSkills(cwd, projectOf(cwd));
+    if (sub === "list") { if (!skills.length) console.log("no skills found"); for (const sk of skills) console.log(`${skillLine(sk, 140)}\n    ${sk.file}`); return; }
+    if (sub === "show") { const sk = skills.find((x) => x.name === args[2]); if (!sk) throw new Error(`no skill ${args[2]}`); console.log(loadSkillBody(sk)); return; }
+    throw new Error("usage: mph skill list | show <name>");
   }
   if (cmd === "sessions") { for (const s of listSessions()) console.log(`${s.id}  ${s.status.padEnd(9)} turns=${String(s.turns.length).padStart(3)}  ${s.cwd}  ${s.title}`); return; }
   if (cmd === "fork") { const p = findSession(args[1]); if (!p) throw new Error("no such session"); const c = forkSession(p, args[2] ?? "fork"); console.log(c.id); return; }
@@ -135,27 +168,65 @@ mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire
   }
 
   let session: SessionData | undefined = opt("--session") ? findSession(opt("--session")!) : undefined;
+  if (!session && flag("--resume-last")) session = listSessions().find((x) => x.status === "active" && x.cwd === cwd && !x.id.includes(":"));
   if (!session) { session = newSession(cwd, opt("--title")); saveSession(session); }
   if (opt("--model")) { session.knobs = { ...(session.knobs ?? {}), main_model: opt("--model") }; saveSession(session); }
   if (opt("--profile")) { session.knobs = { ...(session.knobs ?? {}), ...PROFILES[opt("--profile")!] }; saveSession(session); }
   if (cmd === "run") {
-    const flags = ["--session", "--cwd", "--title", "--model", "--profile", "--max-steps", "--prompt-file"];
+    const flags = ["--session", "--cwd", "--title", "--model", "--profile", "--max-steps", "--prompt-file", "--strategy"];
     const skipIdx = new Set<number>(); flags.forEach((f) => { const i = args.indexOf(f); if (i >= 0) { skipIdx.add(i); skipIdx.add(i + 1); } });
-    const text = opt("--prompt-file") ? readFileSync(opt("--prompt-file")!, "utf8") : args.slice(1).filter((a, i) => !skipIdx.has(i + 1) && !a.startsWith("--")).join(" ");
+    const positional = args.slice(1).filter((a, i) => !skipIdx.has(i + 1) && !a.startsWith("--"));
+    const text = opt("--prompt-file") ? readFileSync(opt("--prompt-file")!, "utf8") : positional.length === 1 && positional[0] === "-" ? readFileSync(0, "utf8") : positional.join(" ");
+    if (!text.trim()) throw new Error("empty prompt");
+    const json = flag("--json");
+    const out = (o: any) => process.stdout.write(JSON.stringify(o) + "\n");
+    const onEvent = json ? (e: { kind: string; detail: string }) => out({ type: "event", ...e }) : printEvent;
+    const onText = json ? (t: string) => out({ type: "text", delta: t }) : (t: string) => process.stdout.write(t);
+    const gateAction: GateAction | undefined = flag("--continue") ? "continue" : flag("--new") ? "rebuild" : undefined;
     const maxSteps = opt("--max-steps") ? Number(opt("--max-steps")) : undefined;
     const sname = opt("--strategy") ?? resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any).strategy;
     const strat = strategyFor(sname);
     let r;
     if (strat.name === "react") {
-      r = await runTurn({ session, userText: text, maxSteps, onText: (t) => process.stdout.write(t), onEvent: printEvent });
+      r = await runTurn({ session, userText: text, maxSteps, gateAction, onText, onEvent });
     } else {
       const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), { ...(session.knobs as any), strategy: sname });
       const ledger = new Ledger(); const store = new ArtifactStore();
-      r = await strat.run({ session, userText: text, knobs, store, ledger, router: new Router(knobs, ledger), maxSteps, onEvent: printEvent });
-      console.log(r.text);
+      r = await strat.run({ session, userText: text, knobs, store, ledger, router: new Router(knobs, ledger), maxSteps, onEvent });
+      if (!json) console.log(r.text);
     }
-    if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) console.log(r.text);
-    console.log(`\n[${session.id} · ${strat.name} · ${r.steps} model calls · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}]`); return; }
+    const rr: any = r;
+    const exit = rr.fidelity === false ? 4 : r.text.startsWith("[model error]") ? 3 : r.text.startsWith("[stopped") ? 2 : 0;
+    if (json) out({ type: "result", session: session.id, strategy: strat.name, text: r.text, steps: r.steps, usage: r.usage, cost_equiv: Math.round(r.costEquiv), gate: rr.gate ? { action: rr.gate.action, by: rr.gate.by, why: rr.gate.why } : undefined, fidelity: rr.fidelity, memory: rr.memory, exit });
+    else {
+      if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) console.log(r.text);
+      console.log(`\n[${session.id} · ${strat.name} · ${r.steps} model calls · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}${rr.gate ? ` · ${rr.gate.action}` : ""}]`);
+    }
+    process.exitCode = exit; return; }
   await chat(session);
 }
+function memoryCommand(argv: string[], inChat: boolean): void {
+  const sub = argv[0] ?? "list";
+  const ms = memorySettings();
+  let store: MemoryStore;
+  try { store = new MemoryStore(); } catch (e: any) { console.log(`memory store unavailable: ${e?.message ?? e}`); return; }
+  try {
+    if (sub === "list") {
+      const type = argv.includes("--type") ? argv[argv.indexOf("--type") + 1] as MemoryType : undefined;
+      const rows = store.list({ status: argv.includes("--all") ? "all" : "active", type, limit: 200 });
+      console.log(`memory: ${store.count()} active (recall ${ms.recall ? "on" : "off"}, write ${ms.write ? "on" : "off"})`);
+      for (const e of rows) console.log(`${e.pinned ? "*" : " "} ${l1Line(e)}${e.status !== "active" ? `  [${e.status}]` : ""}`);
+      return;
+    }
+    if (sub === "search") { const q = argv.slice(1).join(" "); for (const h of store.search(q, { limit: 30, includeInactive: argv.includes("--all") })) console.log(`${h.score.toFixed(2)} ${l1Line(h.entry)}`); return; }
+    if (sub === "get") { for (const id of argv.slice(1)) { const e = store.get(id); console.log(e ? detailBlock(e) + `\n  source: ${e.source.by} · ${e.source.session} turn ${e.source.turn} · used ${e.useCount}x` : `${id}: not found`); } return; }
+    if (sub === "pin" || sub === "unpin") { for (const id of argv.slice(1)) store.setPinned(id, sub === "pin"); console.log("ok"); return; }
+    if (sub === "forget") { for (const id of argv.slice(1)) store.setStatus(id, "superseded"); console.log("ok (kept in the store as superseded; `memory list --all` shows it)"); return; }
+    if (sub === "export") { const t = store.exportJsonl(); if (argv[1]) { writeFileSync(argv[1], t); console.log(`wrote ${argv[1]}`); } else process.stdout.write(t); return; }
+    if (sub === "import") { if (!argv[1]) throw new Error("memory import <file.jsonl>"); console.log(`imported ${store.importJsonl(readFileSync(argv[1], "utf8"))}`); return; }
+    if (sub === "gc") { const cutoff = Date.now() - 60 * 86400_000; const old = store.list({ limit: 5000 }).filter((e) => !e.pinned && Date.parse(e.lastUsed ?? e.updated) < cutoff); console.log(old.length ? `not used for 60 days (forget them with \`memory forget <id>\`):\n` + old.map(l1Line).join("\n") : "nothing stale"); return; }
+    console.log(`unknown memory command ${sub}${inChat ? "" : "; see mph help"}`);
+  } finally { store.close(); }
+}
+
 main().catch((e) => { console.error(e); process.exit(1); });

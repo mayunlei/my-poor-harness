@@ -28,6 +28,12 @@ export interface UpstreamConfigFile {
   /** openai_compatible only: "responses" (default; falls back to chat on 404) or "chat" (/chat/completions) */
   wire_api?: WireApi;
   codex?: { base_url?: string; models?: string[]; originator?: string };
+  /** model choices; unset means "pick for the provider" (see resolveModels) */
+  main_model?: string;
+  mid_model?: string;
+  small_model?: string;
+  /** memory is global (shared by every project); recall=false stops injecting and searching it, write=false stops recording */
+  memory?: { recall?: boolean; write?: boolean };
 }
 
 export interface ResolvedUpstream {
@@ -46,7 +52,8 @@ export interface ResolvedUpstream {
 }
 
 export const DEFAULT_CODEX_BASE = "https://chatgpt.com/backend-api";
-export const DEFAULT_CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini"];
+/** models a ChatGPT account accepts on the Codex backend (probed 2026-10-02; gpt-5.4, gpt-5.4-mini and the *-mini line are rejected) */
+export const DEFAULT_CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-luna", "gpt-5.5"];
 
 export function configPath(): string { return join(harnessHome(), "config.json"); }
 
@@ -96,4 +103,38 @@ function resolveBase(overrides: UpstreamOverrides, env: NodeJS.ProcessEnv): Omit
 
 export function describeUpstream(u: ResolvedUpstream): string {
   return u.provider === "codex" ? `codex (ChatGPT OAuth, ${u.baseUrl}, via ${u.source})` : `openai_compatible (${u.baseUrl}, wire=${u.wireApi}${u.wireApiExplicit ? "" : "+auto"}${u.apiKey ? ", key set" : ", no key"}, via ${u.source})`;
+}
+
+/** Defaults per provider. ChatGPT OAuth has the gpt family; an own endpoint may not, so its tiers default to the main model. */
+/** gpt-5.4-mini is not accepted with a ChatGPT account; gpt-5.6-luna is the backend's own "faster model" */
+export const CODEX_MODEL_DEFAULTS = { main: "gpt-5.6-sol", mid: "gpt-5.5", small: "gpt-5.6-luna" };
+
+export interface ResolvedModels { main: string; mid: string; small: string; source: { main: string; mid: string; small: string } }
+
+/**
+ * Model per tier. Order: knob explicitly set (session/project/global/--model) → config.json
+ * → env MPH_MODEL (main only) → provider default. An empty knob means "auto".
+ */
+export function resolveModels(knobs: { main_model?: string; mid_model?: string; small_model?: string }, env: NodeJS.ProcessEnv = process.env, upstream?: ResolvedUpstream): ResolvedModels {
+  const file = loadConfigFile();
+  const provider = (upstream ?? resolveUpstream({}, env)).provider;
+  const src: ResolvedModels["source"] = { main: "", mid: "", small: "" };
+  const pick = (tier: "main" | "mid" | "small", knob: string | undefined, cfg: string | undefined, fallback: () => string) => {
+    if (knob) { src[tier] = "knob"; return knob; }
+    if (cfg) { src[tier] = "config"; return cfg; }
+    src[tier] = "default"; return fallback();
+  };
+  const main = pick("main", knobs.main_model, file.main_model ?? mphEnv("MODEL", env), () => CODEX_MODEL_DEFAULTS.main);
+  const mid = pick("mid", knobs.mid_model, file.mid_model, () => provider === "codex" ? CODEX_MODEL_DEFAULTS.mid : main);
+  const small = pick("small", knobs.small_model, file.small_model, () => provider === "codex" ? CODEX_MODEL_DEFAULTS.small : main);
+  return { main, mid, small, source: src };
+}
+
+export interface MemorySettings { recall: boolean; write: boolean }
+
+/** global memory switches: config.json `memory`, overridable with MPH_MEMORY_RECALL / MPH_MEMORY_WRITE = 0|1 */
+export function memorySettings(env: NodeJS.ProcessEnv = process.env): MemorySettings {
+  const m = loadConfigFile().memory ?? {};
+  const flag = (v: string | undefined, d: boolean) => v === undefined ? d : !["0", "false", "off", "no"].includes(v.toLowerCase());
+  return { recall: flag(mphEnv("MEMORY_RECALL", env), m.recall !== false), write: flag(mphEnv("MEMORY_WRITE", env), m.write !== false) };
 }

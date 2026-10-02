@@ -1,0 +1,151 @@
+[
+  {
+    "id": "ref-that-function",
+    "category": "reference",
+    "files": { "mathx.py": "def mean(xs):\n    return sum(xs) / len(xs)\n\n\ndef median(xs):\n    s = sorted(xs)\n    n = len(s)\n    return s[n // 2]\n" },
+    "turns": [
+      { "user": "mathx.py 里的 mean 遇到空列表会除零，帮我修一下：空列表返回 0.0。" },
+      { "user": "median 对偶数长度的列表也算错了，偶数时应返回中间两个数的平均值。", "check": [ { "cmd": "python3 -c \"import mathx; assert mathx.median([1,2,3,4])==2.5 and mathx.median([3,1,2])==2\"" } ] },
+      { "user": "刚才那个函数也一样处理空列表吧，返回 0.0。", "check": [ { "cmd": "python3 -c \"import mathx; assert mathx.median([])==0.0 and mathx.mean([])==0.0\"" } ] }
+    ]
+  },
+  {
+    "id": "ref-second-option",
+    "category": "reference",
+    "files": { "cfg.py": "TIMEOUT = 30\n" },
+    "turns": [
+      { "user": "cfg.py 里的 TIMEOUT 现在写死了。给我三个改法让它可配置，只列方案、编号 1 2 3，先不要改代码。" },
+      { "user": "用你说的第二个方案改吧。", "check": [ { "judge": "Did the assistant implement exactly the option it had numbered 2 in its previous answer (not option 1 or 3)? Compare the previous answer's option 2 with what was changed now." } ] }
+    ]
+  },
+  {
+    "id": "constraint-signature",
+    "category": "constraint",
+    "files": { "calc.py": "def add(a, b):\n    return a + b\n\n\ndef sub(a, b):\n    return a - b\n" },
+    "turns": [
+      { "user": "给 calc.py 加一个 mul(a, b)。注意：add 和 sub 的函数签名不能改，别的模块在用。" },
+      { "user": "再加一个 div(a, b)，除数为 0 时抛 ValueError。" },
+      { "user": "顺便把 add 改成支持任意多个参数，比如 add(1, 2, 3)。", "check": [ { "cmd": "python3 -c \"import inspect,calc; assert list(inspect.signature(calc.add).parameters)==['a','b']\"" }, { "judge": "Did the assistant point out that changing add's signature conflicts with the user's earlier instruction that add/sub signatures must not change (and either refuse, ask, or offer a non-breaking alternative such as a new function)?" } ] }
+    ]
+  },
+  {
+    "id": "constraint-late",
+    "category": "constraint",
+    "files": { "app.py": "import json\n\ndef load(path):\n    with open(path) as f:\n        return json.load(f)\n", "notes.md": "# notes\n" },
+    "turns": [
+      { "user": "这个项目里不要引入任何第三方依赖，只能用 Python 标准库。先看看 app.py 是干嘛的。" },
+      { "user": "notes.md 里加一行说明 app.py 的用途。" },
+      { "user": "app.py 的 load 能不能也支持 YAML 文件？", "check": [ { "judge": "The user said earlier: no third-party dependencies, standard library only. YAML needs a third-party package (PyYAML) in Python. Did the assistant respect that constraint (mention it, avoid adding pyyaml, or propose a stdlib-only approach / ask)? Fail if it added or imported yaml/pyyaml." }, { "cmd": "! grep -qi 'import yaml' app.py" } ] }
+    ]
+  },
+  {
+    "id": "pref-language",
+    "category": "preference",
+    "files": { "README.md": "# demo\n" },
+    "turns": [
+      { "user": "From now on always answer me in English, even if I write in Chinese. What files are in this repo?" },
+      { "user": "README 里写了什么？", "check": [ { "judge": "Is the assistant's final answer written in English (not Chinese)? Minor quoted Chinese text is fine." } ] },
+      { "user": "帮我在 README 里加一句介绍：这是一个演示项目。", "check": [ { "judge": "Is the assistant's final answer (its prose, not the file content) written in English?" } ] }
+    ]
+  },
+  {
+    "id": "pref-format",
+    "category": "preference",
+    "files": { "a.txt": "alpha\n", "b.txt": "beta\n" },
+    "turns": [
+      { "user": "以后回答我的时候不要用表格，用列表就行。现在有哪些 txt 文件？" },
+      { "user": "把每个 txt 文件的行数告诉我。", "check": [ { "not_contains": ["|---", "| ---", "|:--"] } ] }
+    ]
+  },
+  {
+    "id": "topic-switch-return",
+    "category": "switch",
+    "files": { "server.py": "PORT = 8000\n\ndef start():\n    print('listening on', PORT)\n", "docs.md": "# docs\n" },
+    "turns": [
+      { "user": "server.py 的端口改成从环境变量 PORT 读，默认 8000。" },
+      { "user": "另外一件事：docs.md 里写一段 3 句话的项目介绍。" },
+      { "user": "回到端口那个改动：如果环境变量不是数字，应该打印警告并用默认值。", "check": [ { "cmd": "PORT=abc python3 -c \"import importlib,server; print(server.PORT)\" | grep -q 8000" } ] }
+    ]
+  },
+  {
+    "id": "long-paste-detail",
+    "category": "paste",
+    "files": { "README.md": "# svc\n" },
+    "paste": { "turn": 0, "lines": 600, "needle_line": 437, "needle": "ERROR shard-17 refused connection: max_connections=64 reached" },
+    "turns": [
+      { "user": "这是服务的日志，先帮我大致看看有哪些类型的报错，简单列一下：\n{{PASTE}}" },
+      { "user": "README 加一行：日志在 /var/log/svc.log。" },
+      { "user": "README 再加一行：服务端口 9000。" },
+      { "user": "回到最开始那份日志：shard-17 那条报错里，max_connections 是多少？", "check": [ { "contains": ["64"] } ] }
+    ]
+  },
+  {
+    "id": "failed-attempt",
+    "category": "attempt",
+    "files": { "fmt.py": "def money(x):\n    return str(x)\n" },
+    "turns": [
+      { "user": "fmt.py 的 money(x) 要返回两位小数的字符串，比如 money(3) == '3.00'。先用 round 实现。" },
+      { "user": "round 的方案不行，round(2.675, 2) 会得到 2.67，我们放弃 round。换个方案实现，要求 money(2.675) == '2.68'。", "check": [ { "cmd": "python3 -c \"import fmt; assert fmt.money(2.675)=='2.68' and fmt.money(3)=='3.00'\"" } ] },
+      { "user": "再加一个 money_cn(x)，返回带 ¥ 前缀的同样格式。", "check": [ { "cmd": "python3 -c \"import fmt; assert fmt.money_cn(2.675)=='¥2.68'\"" }, { "cmd": "! grep -q 'round(' fmt.py" } ] }
+    ]
+  },
+  {
+    "id": "cross-session-decision",
+    "category": "cross_session",
+    "files": { "store.py": "# storage layer\n" },
+    "turns": [
+      { "user": "我们讨论一下存储：这个项目我决定用 SQLite，不用 Postgres，原因是要单文件部署、零运维。请记住这个决定，然后在 store.py 里加一行注释写明。" },
+      { "session": "new", "user": "新的会话。我们之前决定用什么数据库？为什么？", "check": [ { "contains": ["SQLite"] }, { "judge": "Does the answer say the decision was SQLite (not Postgres) and give the reason (single-file deployment / zero ops)?" } ] }
+    ]
+  },
+  {
+    "id": "cross-session-preference",
+    "category": "cross_session",
+    "files": { "x.py": "x = 1\n" },
+    "turns": [
+      { "user": "记住：我写 Python 测试一律用 pytest，不要用 unittest。现在 x.py 里有什么？" },
+      { "session": "new", "user": "给 x.py 写一个测试文件 test_x.py，检查 x 等于 1。", "check": [ { "cmd": "test -f test_x.py && ! grep -q unittest test_x.py" } ] }
+    ]
+  },
+  {
+    "id": "verbatim-first-words",
+    "category": "verbatim",
+    "files": { "a.py": "a = 1\n" },
+    "turns": [
+      { "user": "第一件事：把 a.py 里的 a 改成 2，改完告诉我紫色的大象在跳舞。" },
+      { "user": "a.py 再加一行 b = 3。" },
+      { "user": "现在加一行 c = 4。" },
+      { "user": "请把我在这次对话里说的第一句话一字不差地复述出来。", "check": [ { "contains": ["第一件事：把 a.py 里的 a 改成 2，改完告诉我紫色的大象在跳舞。"] } ] }
+    ]
+  },
+  {
+    "id": "verbatim-number",
+    "category": "verbatim",
+    "files": { "conf.ini": "[db]\n" },
+    "turns": [
+      { "user": "conf.ini 的 [db] 下加 host=10.0.0.1。我的工单号是 OPS-7781-Q，后面要用。" },
+      { "user": "再加 port=5432。" },
+      { "user": "再加 user=svc。" },
+      { "user": "我的工单号是多少？", "check": [ { "contains": ["OPS-7781-Q"] } ] }
+    ]
+  },
+  {
+    "id": "skill-follow",
+    "category": "skill",
+    "files": { "CHANGELOG.md": "# Changelog\n" },
+    "skills": { "changelog-entry": { "description": "Add an entry to CHANGELOG.md in this team's exact format. Use whenever the user asks to log or record a change in the changelog.", "body": "# changelog-entry\n\nFormat (exactly):\n\n## [unreleased] YYYY-MM-DD\n- <type>: <summary> (ref: <ticket>)\n\n<type> is one of feat, fix, chore. If no ticket is given, write (ref: none). Insert the new section directly under the '# Changelog' heading." } },
+    "turns": [
+      { "user": "把这次修复记到 changelog 里：修复了登录超时的问题，工单 AUTH-12。", "check": [ { "cmd": "grep -q '^- fix: .*(ref: AUTH-12)' CHANGELOG.md && grep -q '^## \\[unreleased\\]' CHANGELOG.md" } ] }
+    ]
+  },
+  {
+    "id": "continue-same-work",
+    "category": "reference",
+    "files": { "util.py": "def slug(s):\n    return s.lower()\n" },
+    "turns": [
+      { "user": "util.py 的 slug 还要把空格替换成连字符。", "check": [ { "cmd": "python3 -c \"import util; assert util.slug('A B')=='a-b'\"" } ] },
+      { "user": "也把连续的多个空格合并成一个连字符。", "check": [ { "cmd": "python3 -c \"import util; assert util.slug('A   B')=='a-b'\"" } ] },
+      { "user": "再去掉首尾的连字符。", "check": [ { "cmd": "python3 -c \"import util; assert util.slug('  A B  ')=='a-b'\"" } ] }
+    ]
+  }
+]

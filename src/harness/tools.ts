@@ -16,10 +16,11 @@ import { shaperKnobs, harnessHome, type Knobs } from "../core/knobs.js";
 import { countTokens } from "../core/tokens.js";
 import { sha1 } from "../core/items.js";
 import type { ToolDef } from "./providers.js";
+import { EXTRA_TOOLS, extraHandler, MULTI_TURN_ONLY, type MemoryToolContext } from "./tools_extra.js";
 
 export interface Job { id: string; cmd: string; proc: ChildProcess; buf: string; readOffset: number; exitCode: number | null; startedAt: number; lastOutputAt: number; logPath: string }
 
-export interface ToolContext {
+export interface ToolContext extends Partial<MemoryToolContext> {
   cwd: string; knobs: Knobs; store: ArtifactStore; sessionId: string;
   filesTouched: Set<string>;
   readCache: Map<string, { hash: string; callId: string; verbatim: boolean }>;
@@ -29,7 +30,8 @@ export interface ToolContext {
   onEvent?: (e: { kind: string; detail: string }) => void;
 }
 
-export const TOOL_DEFS: ToolDef[] = [
+/** the original tool set */
+export const CORE_TOOL_DEFS: ToolDef[] = [
   { name: "run", description: "Run a shell command in the workspace. Blocks until it exits (default timeout 600s) and returns shaped output; the full output is always saved and can be expanded with recall. Set background=true for long-running processes and use wait() instead of polling.", parameters: { type: "object", properties: { cmd: { type: "string" }, timeout_s: { type: "integer" }, background: { type: "boolean" }, cwd: { type: "string" } }, required: ["cmd"] } },
   { name: "wait", description: "Wait for a background job inside the harness (no polling). Returns when the job exits, when its output matches `until` (regex), after `silence_s` seconds without new output, or after `max_s`. Returns only output produced since the last wait.", parameters: { type: "object", properties: { job: { type: "string" }, until: { type: "string" }, silence_s: { type: "integer" }, max_s: { type: "integer" } }, required: ["job"] } },
   { name: "read", description: "Read a file (optionally a line range). Repeated identical reads of unchanged content return a short 'unchanged' note instead of the text.", parameters: { type: "object", properties: { path: { type: "string" }, start: { type: "integer" }, end: { type: "integer" }, max_tokens: { type: "integer" } }, required: ["path"] } },
@@ -141,9 +143,20 @@ export async function executeTool(ctx: ToolContext, name: string, args: any, cal
         return await ctx.delegate(String(args.task ?? ""), String(args.inputs ?? ""), args.acceptance ? String(args.acceptance) : undefined);
       }
       case "state_update": return "[state notes recorded]";
-      default: return `[unknown tool ${name}]`;
+      default: {
+        const h = extraHandler(name);
+        return h ? await h(ctx, args, callId) : `[unknown tool ${name}]`;
+      }
     }
   } catch (e: any) {
     return `[${name} error] ${e?.message ?? String(e)}`;
   }
 }
+
+/** single-task tool set (strategies, delegate workers): core + file/search tools */
+export const TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS, ...EXTRA_TOOLS.filter((t) => !t.multiTurnOnly).map((t) => t.def)];
+
+/** multi-turn tool set: state_update is replaced by remember (typed, appended, never overwritten) */
+export const MULTI_TURN_TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS.filter((t) => t.name !== "state_update"), ...EXTRA_TOOLS.map((t) => t.def)];
+
+export { MULTI_TURN_ONLY };

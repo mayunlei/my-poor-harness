@@ -178,7 +178,10 @@ export class ChatStreamTranslator {
  * always streams (works on every gateway, and long generations do not hit idle timeouts).
  */
 export async function chatResponses(baseUrl: string, apiKey: string | undefined, body: any, opts: { stream: boolean; signal?: AbortSignal; forwardHeaders?: Record<string, string> }): Promise<Response> {
-  const chat = { ...responsesToChat(body), stream: true, stream_options: { include_usage: true } };
+  const chat: any = { ...responsesToChat(body), stream: true, stream_options: { include_usage: true } };
+  // Qwen on DashScope thinks by default; small-model work (gate, memory, cards) asks for low effort and
+  // only needs a short JSON answer, so thinking is turned off there. Other gateways would reject the field.
+  if (/dashscope|aliyuncs/.test(baseUrl) && ["none", "minimal", "low"].includes(String(body.reasoning?.effort ?? ""))) chat.enable_thinking = false;
   const headers: Record<string, string> = { ...(opts.forwardHeaders ?? {}), "content-type": "application/json", accept: "text/event-stream" };
   delete headers["content-length"];
   if (apiKey) headers["authorization"] = `Bearer ${apiKey}`;
