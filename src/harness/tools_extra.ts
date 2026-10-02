@@ -34,6 +34,58 @@ export interface RegisteredTool { def: ToolDef; handler: Handler; multiTurnOnly?
 
 const IGNORE = new Set([".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", ".tox", ".next", "target", ".idea", ".DS_Store"]);
 
+/**
+ * Fallback for when ripgrep is not installed: search here rather than shelling out
+ * to grep, whose dialect is not portable. BSD grep -E matches `\d`, GNU grep -E
+ * reads it as a literal `d`, and the model writes PCRE/JS patterns -- so the same
+ * call found matches on a laptop and none in CI. JS RegExp is one dialect
+ * everywhere, and the one the patterns are written in.
+ */
+const GREP_FILE_MAX = 2 * 1024 * 1024;
+const GREP_HIT_MAX = 4000;
+
+/** a shell glob ('*.py', 'src/**\/*.ts') as a regex, tested against basename and relative path */
+export function globToRe(glob?: unknown): RegExp | undefined {
+  if (!glob) return undefined;
+  const body = String(glob)
+    .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "[^/]*")
+    .replace(/\u0000/g, ".*")
+    .replace(/\?/g, "[^/]");
+  try { return new RegExp(`^${body}$`); } catch { return undefined; }
+}
+
+export function grepTree(root: string, re: RegExp, globRe?: RegExp): string[] {
+  const hits: string[] = [];
+  const scan = (file: string) => {
+    let st; try { st = statSync(file); } catch { return; }
+    if (st.size > GREP_FILE_MAX) return;
+    let text; try { text = readFileSync(file, "utf8"); } catch { return; }
+    if (text.includes("\0")) return;                      // binary
+    const lines = text.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (re.test(lines[i])) {
+        hits.push(`${file}:${i + 1}:${lines[i]}`);
+        if (hits.length >= GREP_HIT_MAX) return;
+      }
+    }
+  };
+  const walk = (dir: string) => {
+    let ents; try { ents = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (hits.length >= GREP_HIT_MAX) return;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) { if (!IGNORE.has(e.name)) walk(p); continue; }
+      if (!e.isFile()) continue;
+      if (globRe && !globRe.test(e.name) && !globRe.test(relative(root, p))) continue;
+      scan(p);
+    }
+  };
+  try { statSync(root).isFile() ? scan(root) : walk(root); } catch { /* gone */ }
+  return hits;
+}
+
 function walk(root: string, depth: number, max: number): string[] {
   const out: string[] = [];
   const rec = (dir: string, d: number) => {
@@ -84,14 +136,21 @@ export const EXTRA_TOOLS: RegisteredTool[] = [
     handler: (ctx, args) => {
       const root = resolve(ctx.cwd, String(args.path ?? ".")); const max = Math.min(400, Math.max(1, Number(args.max ?? 60)));
       const pat = String(args.pattern ?? ""); if (!pat) return "[grep] missing pattern";
-      const useRg = onPath("rg");
-      const argv = useRg
-        ? ["--line-number", "--no-heading", "--color=never", "--max-columns=240", ...(args.ignore_case ? ["-i"] : []), ...(args.glob ? ["--glob", String(args.glob)] : []), "-e", pat, root]
-        : ["-rnE", ...(args.ignore_case ? ["-i"] : []), ...(args.glob ? [`--include=${args.glob}`] : []), ...[...IGNORE].map((d) => `--exclude-dir=${d}`), "-e", pat, root];
-      const r = spawnSync(useRg ? "rg" : "grep", argv, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
-      if (r.status === 1) return `[grep] no matches for /${pat}/`;
-      if (r.status !== 0 && !r.stdout) return `[grep error] ${(r.stderr || "").slice(0, 400)}`;
-      const lines = r.stdout.split("\n").filter(Boolean);
+      let stdout: string;
+      if (onPath("rg")) {
+        const argv = ["--line-number", "--no-heading", "--color=never", "--max-columns=240", ...(args.ignore_case ? ["-i"] : []), ...(args.glob ? ["--glob", String(args.glob)] : []), "-e", pat, root];
+        const r = spawnSync("rg", argv, { encoding: "utf8", maxBuffer: 32 * 1024 * 1024, timeout: 60_000 });
+        if (r.status === 1) return `[grep] no matches for /${pat}/`;
+        if (r.status !== 0 && !r.stdout) return `[grep error] ${(r.stderr || "").slice(0, 400)}`;
+        stdout = r.stdout;
+      } else {
+        let re: RegExp;
+        try { re = new RegExp(pat, args.ignore_case ? "i" : ""); } catch (e) { return `[grep error] bad pattern: ${(e as Error).message}`; }
+        const hits = grepTree(root, re, globToRe(args.glob));
+        if (!hits.length) return `[grep] no matches for /${pat}/`;
+        stdout = hits.join("\n");
+      }
+      const lines = stdout.split("\n").filter(Boolean);
       const byFile = new Map<string, string[]>();
       for (const l of lines) { const m = /^(.*?):(\d+):(.*)$/.exec(l); if (!m) continue; const f = relative(ctx.cwd, m[1]) || m[1]; const arr = byFile.get(f) ?? []; arr.push(`  ${m[2]}: ${m[3].slice(0, 240)}`); byFile.set(f, arr); }
       const out: string[] = []; let shown = 0;

@@ -26,6 +26,7 @@ const { resolveModels, memorySettings, saveConfigFile } = await import("../src/u
 const { ArtifactStore } = await import("../src/core/artifacts.js");
 const { resolveKnobs } = await import("../src/core/knobs.js");
 const { executeTool } = await import("../src/harness/tools.js");
+const { grepTree, globToRe } = await import("../src/harness/tools_extra.js");
 const { runTurn } = await import("../src/harness/loop.js");
 const { newSession, saveSession, forkSession, mergeSession } = await import("../src/harness/session.js");
 const { Router } = await import("../src/harness/router.js");
@@ -206,6 +207,15 @@ test("tools: multi_edit is all-or-nothing; ls skips noise; grep groups by file",
   assert.ok(ls.includes("src/a.py") && !ls.includes("node_modules"));
   const g = await executeTool(ctx, "grep", { pattern: "b = \\d" }, "4");
   assert.ok(g.includes("src/a.py (1)") && g.includes("2: b = 2") && !g.includes("node_modules"), g);
+  // the grep tool uses ripgrep when it is installed, so the path taken without it
+  // needs its own test: shelling out to grep instead made `\d` match on macOS and
+  // not under GNU grep, which passed here and failed in CI
+  const fb = grepTree(ws, /b = \d/);
+  assert.equal(fb.length, 1, fb.join("|"));
+  assert.match(fb[0], /src\/a\.py:2:b = 2$/);
+  assert.equal(grepTree(ws, /a = /).length, 1, "node_modules is skipped here too");
+  assert.equal(grepTree(ws, /= /, globToRe("*.js")).length, 0, "the glob is applied");
+  assert.equal(grepTree(ws, /= /, globToRe("*.py")).length, 3);
   assert.match(await executeTool(ctx, "remember", { type: "fact", title: "x" }, "5"), /turned off/);
 });
 
