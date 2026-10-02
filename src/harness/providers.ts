@@ -61,7 +61,7 @@ export class OpenAIResponsesClient implements ModelClient {
       // Some Responses-compatible providers reject the OpenAI-only
       // `max_output_tokens` field (notably for their small/auxiliary models).
       // Retry once without the optional cap instead of failing memory/card work.
-      if (r.status === 400 && /unsupported parameter[^\\n]*max_output_tokens|unsupported[^\\n]*max_output_tokens/i.test(errorText)) {
+      if (r.status === 400 && /unsupported parameter[^\n]*max_output_tokens|unsupported[^\n]*max_output_tokens/i.test(errorText)) {
         const fallbackBody = { ...body };
         delete fallbackBody.max_output_tokens;
         r = await this.upstream.responses(fallbackBody, { stream, sessionId: req.promptCacheKey, forwardHeaders: this.extraHeaders });
