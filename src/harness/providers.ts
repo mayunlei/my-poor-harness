@@ -55,7 +55,20 @@ export class OpenAIResponsesClient implements ModelClient {
     if (req.reasoningEffort) body.reasoning = { effort: req.reasoningEffort, summary: "auto" };
     if (req.maxOutputTokens) body.max_output_tokens = req.maxOutputTokens;
     if (req.promptCacheKey) body.prompt_cache_key = req.promptCacheKey;
-    const r = await this.upstream.responses(body, { stream, sessionId: req.promptCacheKey, forwardHeaders: this.extraHeaders });
+    let r = await this.upstream.responses(body, { stream, sessionId: req.promptCacheKey, forwardHeaders: this.extraHeaders });
+    if (!r.ok) {
+      const errorText = await r.text();
+      // Some Responses-compatible providers reject the OpenAI-only
+      // `max_output_tokens` field (notably for their small/auxiliary models).
+      // Retry once without the optional cap instead of failing memory/card work.
+      if (r.status === 400 && /unsupported parameter[^\\n]*max_output_tokens|unsupported[^\\n]*max_output_tokens/i.test(errorText)) {
+        const fallbackBody = { ...body };
+        delete fallbackBody.max_output_tokens;
+        r = await this.upstream.responses(fallbackBody, { stream, sessionId: req.promptCacheKey, forwardHeaders: this.extraHeaders });
+      } else {
+        throw new Error(`model error ${r.status}: ${errorText.slice(0, 2000)}`);
+      }
+    }
     if (!r.ok) throw new Error(`model error ${r.status}: ${(await r.text()).slice(0, 2000)}`);
     let resp: any;
     const ct = r.headers.get("content-type") ?? "";

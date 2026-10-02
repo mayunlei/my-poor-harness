@@ -16,7 +16,7 @@ import { shaperKnobs, harnessHome, type Knobs } from "../core/knobs.js";
 import { countTokens } from "../core/tokens.js";
 import { sha1 } from "../core/items.js";
 import type { ToolDef } from "./providers.js";
-import { EXTRA_TOOLS, extraHandler, MULTI_TURN_ONLY, type MemoryToolContext } from "./tools_extra.js";
+import { ALL_EXTRA_TOOLS, EXTRA_TOOLS, extraHandler, MULTI_TURN_ONLY, type MemoryToolContext } from "./tools_extra.js";
 
 export interface Job { id: string; cmd: string; proc: ChildProcess; buf: string; readOffset: number; exitCode: number | null; startedAt: number; lastOutputAt: number; logPath: string }
 
@@ -154,9 +154,16 @@ export async function executeTool(ctx: ToolContext, name: string, args: any, cal
 }
 
 /** single-task tool set (strategies, delegate workers): core + file/search tools */
-export const TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS, ...EXTRA_TOOLS.filter((t) => !t.multiTurnOnly).map((t) => t.def)];
+export const TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS, ...EXTRA_TOOLS.filter((t) => !t.multiTurnOnly && !t.vibeOnly).map((t) => t.def)];
 
 /** multi-turn tool set: state_update is replaced by remember (typed, appended, never overwritten) */
-export const MULTI_TURN_TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS.filter((t) => t.name !== "state_update"), ...EXTRA_TOOLS.map((t) => t.def)];
+export const MULTI_TURN_TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS.filter((t) => t.name !== "state_update"), ...EXTRA_TOOLS.filter((t) => !t.vibeOnly).map((t) => t.def)];
+
+/**
+ * Every registered tool, which is what a caller's `toolNames` is resolved against.
+ * The vibe tools are deliberately in no default set: a coding turn must not be able
+ * to rewrite the harness's own configuration, so they only arrive by being named.
+ */
+export const ALL_TOOL_DEFS: ToolDef[] = [...CORE_TOOL_DEFS, ...ALL_EXTRA_TOOLS.map((t) => t.def)];
 
 export { MULTI_TURN_ONLY };

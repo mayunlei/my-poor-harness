@@ -128,6 +128,7 @@ One command, `mph`. `mph help` prints all of it; `mph <command> --help` has the 
 | command | what it does |
 |---|---|
 | `chat` · `run` | the agent loop, interactive or one-shot, with `fork` / `merge` and long-term memory |
+| `vibe` | configure the harness by talking to it — it reads and writes its own settings |
 | `proxy` | transparent `/v1/responses` proxy — keep your current client, send fewer tokens |
 | `dash` | live dashboard: what you are saving, and what it is costing in credits |
 | `report` · `tune` · `watch` · `history` | read the ledger, move the knobs within bounds, with provenance |
@@ -207,7 +208,46 @@ MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=
   MPH_OPENAI_WIRE_API=chat mph run --model qwen3.7-plus "…"
 ```
 
-### 2. Keep your current client (proxy mode)
+### 2. Or just say what you want
+
+```bash
+mph vibe "把记忆关掉，这个项目的上下文给小一点"
+mph vibe                            # no argument: a session that starts in vibe mode
+```
+
+Configuration is the part of a tool like this that nobody reads the manual for. There are
+fifty-odd knobs, three model tiers and a dozen config keys, and the useful question is never
+"what is `gate_sim_high`" — it is "stop spending so much on short questions". So vibe mode is
+the same agent loop with a different prompt and a different tool set: it can read its own
+settings and write them, and it cannot touch your files or run commands.
+
+```
+[my-project · vibe] you> 现在是什么配置
+  ⚙ settings_read overview
+Codex (your ChatGPT login), gpt-5.6-sol for the conversation and gpt-5.6-luna for the gate and
+memory. Memory on, 12 entries. Everything else is at its default.
+
+[my-project · vibe] you> 短问题别花那么多钟
+  ⚙ settings_read knobs effort
+  ◇ effort_execute: "medium" -> "low" (global)
+effort_execute medium → low, and turn_budget 60k → 40k so a long turn folds sooner.
+Both are cache-breaking: they apply from the next turn. Undo with `mph history`.
+```
+
+Inside a chat session it is `/vibe` to enter and `/vibe off` to leave; `/vibe <sentence>` does
+one thing without changing mode. Every write goes through the same validators the CLI uses, so a
+bad value writes *nothing* and says why, rather than quietly falling back to a default. Each
+change lands in the knob history with your own words as the reason:
+
+```bash
+mph history            # 2026-10-02T12:40:11Z  vibe  global  {"effort_execute":"low"}  短问题别花那么多钟
+mph knobs effort_execute=medium                                              # and that is the undo
+```
+
+It will not paste an API key for you — it tells you to run `mph config api_key=...` yourself,
+because anything you type into the conversation is sent to the model.
+
+### 3. Keep your current client (proxy mode)
 
 The lowest-effort win: nothing about your workflow changes except the token bill.
 
@@ -225,7 +265,7 @@ Every request gets rewritten on the way out — big tool outputs folded to one-l
 model can expand with `recall(id)`, duplicate reads collapsed, poll chains merged — and a ledger
 row is written per response. `curl localhost:8791/health` and `/stats` if you want to look.
 
-### 3. Or use the harness's own loop
+### 4. Or use the harness's own loop
 
 Per-turn rebuild, blocking `run`/`wait` instead of polling, and sessions you can branch:
 
@@ -239,7 +279,7 @@ In `chat`: `/fork <name>` branches for a side question, `/merge <branch>` brings
 state back as one block, `/strategy plan_verify` switches execution strategy, `/stats` shows the
 turn's tokens.
 
-### 4. Watch what it is doing
+### 5. Watch what it is doing
 
 ```bash
 mph dash --open
@@ -276,7 +316,7 @@ JSON for scripts and CI.
 The credits meter is eventually consistent and the pool is shared across your devices, so the
 totals are sound and a single row is not. The page says so, in place.
 
-### 5. Report, tune, and measure the price
+### 6. Report, tune, and measure the price
 
 ```bash
 mph report                         # cost, credits, cache, compaction net effect, pass rates
@@ -288,7 +328,7 @@ mph knobs                          # every knob and its current value
 mph history                        # every knob change: when, by whom, why
 ```
 
-### 6. Try a different agent topology
+### 7. Try a different agent topology
 
 ```bash
 mph strategies
@@ -300,7 +340,7 @@ mph compare --tasks tasks.jsonl --strategies react,plan_verify --copy
 strategy's own claim — in a private copy of the workspace. See
 [docs/USAGE.md](docs/USAGE.md#7-strategies-how-a-turn-is-organised).
 
-### 7. Measure the savings for free, on your own history
+### 8. Measure the savings for free, on your own history
 
 ```bash
 npm run bench:replay -- --limit 30 --min-bytes 200000

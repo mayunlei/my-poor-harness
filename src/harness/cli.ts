@@ -18,6 +18,8 @@ import { detailBlock, l1Line } from "../memory/recall.js";
 import { discoverSkills, loadSkillBody, skillLine } from "../skills/index.js";
 import { projectOf } from "../memory/store.js";
 import type { GateAction } from "./gate.js";
+import { VIBE_PROMPT, VIBE_TOOL_NAMES } from "./vibe.js";
+import { loadCredentials } from "../upstream/codex_auth.js";
 import { LEDGER_COMMANDS } from "../sidecar/commands.js";
 
 const HELP = `mph — one command for the whole harness. State lives in ~/.mph (override with MPH_HOME).
@@ -28,6 +30,7 @@ conversation
   run "task" | run - | run --prompt-file f     one turn; [--session id | --resume-last] [--cwd dir] [--max-steps n]
                                                [--continue|--new] [--strategy s] [--json]
                                                exit 0 done · 2 step limit · 3 model error · 4 user words lost
+  vibe ["what you want"]                       configure the harness by talking to it; /vibe inside chat
   map --task "..." (--items a,b,c | --items-file f) [--parallel 3]         map-reduce, fresh context per item
   compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]
   strategies | sessions | fork <id> <name> | merge <branch> <main> | discard <id>
@@ -48,12 +51,19 @@ settings
   login | logout | whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
   config [k=v ...]                             provider, base_url, api_key, wire_api, *_model, memory_*`;
 
+const VIBE_BANNER = `vibe on: tell me what you want the harness to do and I will read and change its own settings.
+  e.g. "把记忆关掉" · "这个项目上下文给小一点" · "换成我自己的 qwen 端点" · "现在是什么配置"
+  I can read the workspace and the settings; I cannot edit your files or run commands here. /vibe off to leave.`;
+
+/** one definition of what vibe mode is: its prompt, its tools, and no memory writes */
+const VIBE_TURN = { instructions: VIBE_PROMPT, toolNames: VIBE_TOOL_NAMES, multiTurn: false as const };
+
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "chat";
 const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const flag = (n: string) => args.includes(n);
 
-/** the words of a command, with flag values (`--cwd X`) left out */
+/** the words of a command, with flag values (`--cwd X`) left out; `run` and `vibe` both need this */
 function positionalAfter(flags: string[]): string[] {
   const skip = new Set<number>();
   for (const f of flags) { const i = args.indexOf(f); if (i >= 0) { skip.add(i); skip.add(i + 1); } }
@@ -65,18 +75,27 @@ function printEvent(e: { kind: string; detail: string }) {
   process.stderr.write(`  ${tag} ${e.detail}\n`);
 }
 
-async function chat(session: SessionData) {
+async function chat(session: SessionData, startInVibe = false) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const ask = (q: string) => new Promise<string>((r) => rl.question(q, r));
   console.log(`session ${session.id} (${session.title}) in ${session.cwd}. /help for commands.`);
   let pendingGate: GateAction | undefined;
+  let vibe = startInVibe;
+  if (vibe) console.log(VIBE_BANNER);
   for (;;) {
-    const line = (await ask(`\n[${session.title}] you> `)).trim();
+    const line = (await ask(`\n[${session.title}${vibe ? " · vibe" : ""}] you> `)).trim();
     if (!line) continue;
-    if (line.startsWith("/")) {
+    let text = line;
+    if (line === "/vibe" || line.startsWith("/vibe ")) {
+      const arg = line.slice(5).trim();
+      if (arg === "off") { vibe = false; console.log("vibe off: back to coding."); continue; }
+      const was = vibe; vibe = true;
+      if (!arg) { console.log(was ? "already in vibe mode (/vibe off to leave)" : VIBE_BANNER); continue; }
+      text = arg;                                  // `/vibe 帮我配置` is a message, not just a mode switch
+    } else if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
       if (c === "continue" || c === "new") { pendingGate = c === "continue" ? "continue" : "rebuild"; console.log(`next turn will ${c === "continue" ? "carry the previous turn's work" : "start from the briefing only"}`); continue; }
       if (c === "memory") { memoryCommand(rest, true); continue; }
       if (c === "skills") { for (const sk of discoverSkills(session.cwd, projectOf(session.cwd))) console.log(skillLine(sk, 120)); continue; }
@@ -102,11 +121,13 @@ async function chat(session: SessionData) {
     }
     const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any);
     const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
-    const strat = strategyFor(knobs.strategy);
-    const r = strat.name === "react"
-      ? await runTurn({ session, userText: line, knobs, store, ledger, router, gateAction: pendingGate, onText: (t) => process.stdout.write(t), onEvent: printEvent })
-      : await strat.run({ session, userText: line, knobs, store, ledger, router, onEvent: printEvent });
-    if (strat.name !== "react") process.stdout.write(r.text + "\n");
+    const strat = vibe ? strategyFor("react") : strategyFor(knobs.strategy);
+    const r = vibe
+      ? await runTurn({ session, userText: text, knobs, store, ledger, router, ...VIBE_TURN, onText: (t) => process.stdout.write(t), onEvent: printEvent })
+      : strat.name === "react"
+      ? await runTurn({ session, userText: text, knobs, store, ledger, router, gateAction: pendingGate, onText: (t) => process.stdout.write(t), onEvent: printEvent })
+      : await strat.run({ session, userText: text, knobs, store, ledger, router, onEvent: printEvent });
+    if (!vibe && strat.name !== "react") process.stdout.write(r.text + "\n");
     else if (!r.text.includes("[model error]")) process.stdout.write("\n");
     else console.log(r.text);
     pendingGate = undefined;
@@ -181,6 +202,22 @@ async function main() {
     const rep = await compareStrategies({ tasks, strategies, cwd, copy: flag("--copy"), maxSteps: opt("--max-steps") ? Number(opt("--max-steps")) : undefined, onEvent: printEvent });
     console.log("\n" + formatCompare(rep));
     const saved = opt("--json"); if (saved) { writeFileSync(saved, JSON.stringify(rep, null, 2)); console.log(`\nwrote ${saved}`); } else console.log(`\nwrote ${saveCompare(rep)}`);
+    return;
+  }
+
+  if (cmd === "vibe") {
+    const text = positionalAfter(["--cwd", "--session", "--title"]).join(" ").trim();
+    const up = resolveUpstream();
+    if (up.provider === "codex" && !loadCredentials()) {
+      console.error("vibe needs a model to talk to, and there are no ChatGPT credentials yet.\nRun `mph login` first, or point mph at your own endpoint:\n  mph config provider=openai_compatible base_url=https://... api_key=...");
+      process.exitCode = 1; return;
+    }
+    let s2 = opt("--session") ? findSession(opt("--session")!) : undefined;
+    if (!s2) { s2 = newSession(cwd, "vibe"); saveSession(s2); }
+    if (!text) { await chat(s2, true); return; }
+    const r = await runTurn({ session: s2, userText: text, ...VIBE_TURN, onText: (t) => process.stdout.write(t), onEvent: printEvent });
+    process.stdout.write("\n");
+    console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output}]`);
     return;
   }
 

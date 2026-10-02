@@ -14,6 +14,7 @@ There is one command, `mph`; every layer below is one of its subcommands (`mph h
 | **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `mph price`, `mph price-probe` |
 | **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `mph compare` scores them on an external oracle | `mph run --strategy`, `mph compare` |
 | **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `mph dash` |
+| **vibe** | configuring the harness by talking to it: the agent loop with a prompt and tool set for reading and writing the harness's own knobs and config, and nothing else | `mph vibe`, `/vibe` |
 | **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `mph login`, `mph config` |
 
 ## Install
@@ -21,7 +22,7 @@ There is one command, `mph`; every layer below is one of its subcommands (`mph h
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 75 tests: core, harness loop, multi-turn (transcript, memory, gate, skills), strategies, the single CLI, proxy, upstream, meter, price, sidecar, dashboard
+npm test                                  # 82 tests: core, harness loop, multi-turn (transcript, memory, gate, skills), strategies, vibe, the single CLI, proxy, upstream, meter, price, sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
@@ -165,7 +166,43 @@ MPH_OPENAI_BASE_URL=… MPH_OPENAI_API_KEY=… MPH_OPENAI_WIRE_API=chat \
 
 15 scripted conversations (`bench/multiturn/cases.json`): references back, constraints that must hold later, preferences, topic switch and return, a detail from a long paste several turns later, a failed approach not to repeat, decisions and preferences across sessions, verbatim recall of the user's first sentence, following a skill. Checks run commands in the workspace, match the answer, or ask a judge (majority of 3). Arms: `full` (keep everything, no memory), `hybrid` (default), `hybrid-nomem`.
 
-## 3. Sidecar
+## 3. Vibe mode: configuring it by talking to it
+
+```bash
+mph vibe "换成我自己的 qwen 端点，小模型也用它"     # one request
+mph vibe                                           # a session that starts in vibe mode
+# inside a chat session:  /vibe        /vibe <sentence>        /vibe off
+```
+
+The same loop as a coding turn, with `VIBE_PROMPT` instead of `FIXED_PROMPT` and this tool set:
+
+| tool | what it does |
+|---|---|
+| `settings_read` | sections `overview` (upstream, models, memory, skills, non-default knobs), `knobs` (every knob with default, range, where it is set; `filter` is a regex), `config` (config.json and the keys that may be written), `skills`, `usage` (the ledger report) |
+| `settings_write` | knobs and/or config.json, scope `global` / `project` / `session`. All or nothing, and `why` is required |
+| `upstream_probe` | which credentials and endpoint a request would really use; `check_endpoint=true` also does one free `GET /models` |
+| `read`, `ls`, `grep` | read-only, for when the right setting depends on the project |
+
+It has no `run`, no `write_file`, no `edit` and no `delegate`: vibe mode cannot change your
+workspace or execute anything. The settings tools are in no other tool set either, so an
+ordinary coding turn cannot reach them — they arrive only by being named in `toolNames`
+(`ALL_TOOL_DEFS` in `src/harness/tools.ts`).
+
+Writes are strict on purpose. The CLI's `clampKnob` silently falls back to the default on a bad
+value, which for an agent would mean reporting a change that never happened; `validateKnobs`
+rejects instead, with the range or the list of choices, and one bad value in a call writes
+nothing at all. Every applied change is recorded with `who: "vibe"` and the user's own sentence
+as `why`, so:
+
+```bash
+mph history                        # what the conversation changed, when, and why
+mph knobs <name>=<old value>       # the undo
+```
+
+An API key is never requested in the conversation and never echoed back: the prompt tells the
+agent to have you run `mph config api_key=...` in your own shell instead.
+
+## 4. Sidecar
 
 ```bash
 npx tsx src/sidecar/cli.ts report            # cost, credits spent and left, cache, compaction net effect, judge, delegate pass rates
@@ -176,7 +213,7 @@ npx tsx src/sidecar/cli.ts history           # every knob change with who/why/sc
 
 Knobs live in `~/.mph/knobs.json` with layers `global → profile → project → session → turn`; all have bounds and steps (`src/core/knobs.ts`). Cache-breaking knobs (`main_model`, `effort_*`, `prefix_trim`, `reasoning_keep_last`) are only applied at fold events or turn boundaries.
 
-## 4. Replay benchmark (zero model cost)
+## 5. Replay benchmark (zero model cost)
 
 ```bash
 npx tsx src/bench/replay.ts --limit 30 --min-bytes 200000            # largest sessions (use --max-requests 300 to bound very long ones)
@@ -185,7 +222,7 @@ npx tsx src/bench/replay.ts file1.jsonl file2.jsonl --profile long_task --knob.w
 
 It rebuilds every request of a recorded Codex session, runs it through `rewrite()` with persistent state, simulates the prefix cache as the common item-prefix with the previous request (cold after `cache_ttl_estimate_s` idle), and reports raw tokens and cost-equivalent (cached ×0.1, output ×8). The estimator is calibrated against the measured `input_tokens` (ratio 0.99 on the 30-session sample).
 
-## 5. Live dashboard
+## 6. Live dashboard
 
 ```bash
 npx tsx src/dashboard/cli.ts                      # http://127.0.0.1:8792
@@ -229,7 +266,7 @@ It only ever reads the ledger: run it next to the proxy, a chat session and `mph
 without interference. The tailer reads just the appended bytes, holds back half-written lines,
 and re-reads from the start if the ledger is truncated or rotated.
 
-## 6. Build and release
+## 7. Build and release
 
 ```bash
 npm run build                    # tsc → dist/ (the mph* commands prefer dist/ when it exists)
@@ -252,7 +289,7 @@ CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (typecheck + test 
 verifies the tag matches `package.json`, packages, and attaches the artifacts to the release;
 also runnable by hand with `workflow_dispatch` for an existing tag).
 
-## 7. Strategies: how a turn is organised
+## 8. Strategies: how a turn is organised
 
 ReAct — one agent, one growing context, think/act/observe until done — is the default
 because it is what every client does, not because it is best. `src/harness/strategies`
@@ -348,7 +385,7 @@ Results are written to `~/.mph/compare-<ts>.json`, and every model call carries
 `extra.strategy` in the ledger, so `mph report` and the dashboard break down by
 strategy too.
 
-## 8. Measuring the real price
+## 9. Measuring the real price
 
 Everything else in this repo optimises a cost model whose weights are a guess. `PRICE` in
 `src/core/ledger.ts` is `0.1 / 1 / 8` — the public pay-as-you-go *shape* — and a subscription
@@ -429,7 +466,7 @@ prices is worse than no router.
 ```
 src/core      items, tokens, artifacts, shapers, knobs, ledger, cache_state, judge, summary, rewrite
 src/proxy     server (Responses proxy + recall), cli (`mph proxy`)
-src/harness   providers (OpenAI Responses / Anthropic), tools + tools_extra, session (DAG, fork/merge), router, gate, assemble, loop, cli (the one entry point)
+src/harness   providers (OpenAI Responses / Anthropic), tools + tools_extra, session (DAG, fork/merge), router, gate, assemble, loop, vibe (settings tools + prompt), cli (the one entry point)
 src/transcript  append-only transcript, paste detection, epoch rendering, answer cards, user-words fidelity check
 src/memory    store (node:sqlite + FTS5), recall (candidates, L0/L1/L2), write (rules, extraction, dedupe)
 src/skills    discovery, frontmatter, index, project instructions

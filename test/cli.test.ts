@@ -38,7 +38,7 @@ function mph(args: string[], timeoutMs = 60_000): Promise<{ code: number | null;
 test("mph help lists every command, and the former binaries are gone from it", async () => {
   const { code, out } = await mph(["help"]);
   assert.equal(code, 0);
-  for (const c of ["chat", "run", "proxy", "dash", "knobs", "memory", "skill", "config", "login", ...LEDGER_COMMANDS]) {
+  for (const c of ["chat", "run", "vibe", "proxy", "dash", "knobs", "memory", "skill", "config", "login", ...LEDGER_COMMANDS]) {
     assert.match(out, new RegExp(`(^|\\s)${c.replace("-", "\\-")}\\b`, "m"), `help mentions ${c}`);
   }
   assert.ok(!/mph-proxy|mph-dash|mph-sidecar/.test(out), "no separate binaries are advertised");
@@ -83,4 +83,10 @@ test("importing a subcommand module starts nothing", async () => {
   assert.equal(typeof dash.dashMain, "function");
   assert.equal(typeof ledger.ledgerMain, "function");
   assert.equal(process.listenerCount("SIGINT"), before, "no signal handlers installed by an import");
+});
+
+test("vibe refuses to start without credentials instead of hanging on a model call", async () => {
+  const { code, err } = await mph(["vibe", "turn memory off"]);
+  assert.equal(code, 1);
+  assert.match(err, /mph login|openai_compatible/, "it says how to get a model");
 });

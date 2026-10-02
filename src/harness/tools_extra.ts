@@ -12,6 +12,7 @@ import { MEMORY_TYPES, type MemoryStore, type MemoryType } from "../memory/store
 import { detailBlock, l1Line } from "../memory/recall.js";
 import { addUnlessDuplicate, normalizeLinks } from "../memory/write.js";
 import { loadSkillBody, onPath, type Skill } from "../skills/index.js";
+import { VIBE_TOOLS } from "./vibe.js";
 
 /** what the multi-turn loop adds to a ToolContext */
 export interface MemoryToolContext {
@@ -30,7 +31,7 @@ export interface MemoryToolContext {
 }
 
 export type Handler = (ctx: ToolContext & Partial<MemoryToolContext>, args: any, callId: string) => Promise<string> | string;
-export interface RegisteredTool { def: ToolDef; handler: Handler; multiTurnOnly?: boolean }
+export interface RegisteredTool { def: ToolDef; handler: Handler; multiTurnOnly?: boolean; vibeOnly?: boolean }
 
 const IGNORE = new Set([".git", "node_modules", "dist", "build", "__pycache__", ".venv", "venv", ".mypy_cache", ".pytest_cache", ".tox", ".next", "target", ".idea", ".DS_Store"]);
 
@@ -211,6 +212,8 @@ export const EXTRA_TOOLS: RegisteredTool[] = [
   },
 ];
 
+/** vibe-mode tools live in vibe.ts but dispatch through the same table */
+export const ALL_EXTRA_TOOLS: RegisteredTool[] = [...EXTRA_TOOLS, ...VIBE_TOOLS];
 export const EXTRA_TOOL_DEFS: ToolDef[] = EXTRA_TOOLS.map((t) => t.def);
 export const MULTI_TURN_ONLY = new Set(EXTRA_TOOLS.filter((t) => t.multiTurnOnly).map((t) => t.def.name));
-export function extraHandler(name: string): Handler | undefined { return EXTRA_TOOLS.find((t) => t.def.name === name)?.handler; }
+export function extraHandler(name: string): Handler | undefined { return ALL_EXTRA_TOOLS.find((t) => t.def.name === name)?.handler; }

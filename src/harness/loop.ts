@@ -13,7 +13,7 @@ import { Ledger } from "../core/ledger.js";
 import { buildSummary, renderSummary } from "../core/summary.js";
 import { parseInput } from "../core/items.js";
 import { countTokens } from "../core/tokens.js";
-import { TOOL_DEFS, MULTI_TURN_TOOL_DEFS, executeTool, type ToolContext } from "./tools.js";
+import { ALL_TOOL_DEFS, TOOL_DEFS, MULTI_TURN_TOOL_DEFS, executeTool, type ToolContext } from "./tools.js";
 import { MULTI_TURN_PROMPT, assembleInput, capCarried, mergedBlocks, renderBriefing, workspaceDigest } from "./assemble.js";
 import { decideTurn, gateFeatures, mentionedFiles, type GateAction, type GateDecision } from "./gate.js";
 import { appendAnswer, appendUser, checkUserFidelity, readTranscript, renderTranscript, ruleCard, userTextTokens, type AnswerEntry, type UserEntry } from "../transcript/index.js";
@@ -108,7 +108,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     items = [...base, { type: "message", role: "user", content: [{ type: "input_text", text: o.userText }] }];
     instructions = o.instructions ?? FIXED_PROMPT;
     toolDefs = tier === "T4" ? TOOL_DEFS : TOOL_DEFS.filter((t) => t.name !== "delegate");
-    if (o.toolNames) toolDefs = TOOL_DEFS.filter((t) => o.toolNames!.includes(t.name));
+    // from every registered tool, not just the default set: vibe mode names tools that
+    // are deliberately absent from it
+    if (o.toolNames) toolDefs = ALL_TOOL_DEFS.filter((t) => o.toolNames!.includes(t.name));
   }
   const rwState = { ...newRewriteState(session.id + ":" + turnIdx), stubs: session.rewriteState.stubs, userMsgCount: 0 };
   let fidelityOk = true;
