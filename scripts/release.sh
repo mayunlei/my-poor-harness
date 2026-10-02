@@ -98,12 +98,18 @@ echo "==> tagging $TAG"
 git tag -a "$TAG" -m "$NAME $TAG"
 git push origin "$TAG"
 
+# Two steps on purpose. `gh release create` WITH attachments reliably fails here with
+# HTTP 404 from uploads.github.com, and the half-created release then disappears.
+# Creating it empty and uploading afterwards works.
 echo "==> creating the GitHub release"
-gh release create "$TAG" \
+gh release create "$TAG" --title "$NAME $TAG" --notes-file "$NOTES" --verify-tag
+rm -f "$NOTES"
+
+echo "==> uploading the artifacts"
+gh release upload "$TAG" \
   release/"$NAME-$VERSION".tgz \
   release/"$NAME-$VERSION"-standalone.tar.gz \
   release/SHA256SUMS.txt \
-  --title "$NAME $TAG" --notes-file "$NOTES"
-rm -f "$NOTES"
+  --clobber
 
 echo "==> done: $(gh release view "$TAG" --json url --jq .url)"

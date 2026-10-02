@@ -42,11 +42,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release/* --clobber
-          else
-            gh release create "$TAG" release/* --title "my-poor-harness $TAG" --generate-notes
+          # create empty then upload: `gh release create` with attachments 404s on the
+          # upload endpoint and loses the release it just made
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "my-poor-harness $TAG" --generate-notes --verify-tag
           fi
+          gh release upload "$TAG" release/* --clobber
+          gh release view "$TAG" --json assets --jq '.assets[].name'   # fail loudly if nothing attached
       - uses: actions/upload-artifact@v4
         with:
           name: release-artifacts
