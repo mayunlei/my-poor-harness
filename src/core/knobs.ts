@@ -50,6 +50,17 @@ export const KNOB_SPECS = {
   effort_summarize: { default: "low", choices: ["low", "medium", "high", "xhigh"], description: "reasoning effort for summaries" } as KnobSpec<string>,
   use_model_summary: { default: false, description: "at turn end, ask the small model for a 150-token summary (T2)" } as KnobSpec<boolean>,
   t3_escalate_pass_rate: { default: 0.7, min: 0.3, max: 0.95, step: 0.05, description: "escalate a task class when cheap-model pass rate drops below this" } as KnobSpec<number>,
+  // strategy: how a turn is organised (see src/harness/strategies)
+  strategy: { default: "react", choices: ["react", "plan_verify"], description: "turn execution strategy" } as KnobSpec<string>,
+  plan_max_steps: { default: 12, min: 1, max: 60, step: 1, description: "model steps the planner may spend looking at the repo before it must emit a plan" } as KnobSpec<number>,
+  plan_min_tasks: { default: 2, min: 1, max: 10, step: 1, description: "fewest steps a plan may contain" } as KnobSpec<number>,
+  plan_max_tasks: { default: 8, min: 2, max: 30, step: 1, description: "most steps a plan may contain; more means more verification overhead" } as KnobSpec<number>,
+  plan_parallel: { default: 2, min: 1, max: 8, step: 1, description: "independent plan steps executed concurrently" } as KnobSpec<number>,
+  worker_tier: { default: "T3", choices: ["T3", "T4"], description: "tier a plan step runs on unless the planner asks for more" } as KnobSpec<string>,
+  verifier_tier: { default: "T3", choices: ["T1", "T2", "T3", "T4"], description: "tier of the independent verifier; T4 verifies better but doubles the per-step price of the strong model" } as KnobSpec<string>,
+  argue_rounds: { default: 2, min: 0, max: 6, step: 1, description: "worker/verifier argue rounds before the worker is escalated" } as KnobSpec<number>,
+  replan_limit: { default: 1, min: 0, max: 4, step: 1, description: "times the planner may revise the remaining plan after a step cannot be made to pass" } as KnobSpec<number>,
+  verify_requires_command: { default: true, description: "a step with no acceptance command is reported unverified instead of passed" } as KnobSpec<boolean>,
 } as const;
 
 export type KnobName = keyof typeof KNOB_SPECS;

@@ -1,9 +1,11 @@
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { runTurn } from "./loop.js";
+import { strategyFor, STRATEGIES } from "./strategies/index.js";
+import { compareStrategies, formatCompare, saveCompare, loadTasks } from "./compare.js";
 import { newSession, saveSession, loadSession, listSessions, findSession, forkSession, mergeSession, discardSession, type SessionData } from "./session.js";
-import { knobsFor, applyKnobChange, KNOB_SPECS, PROFILES } from "../core/knobs.js";
+import { knobsFor, applyKnobChange, resolveKnobs, KNOB_SPECS, PROFILES } from "../core/knobs.js";
 import { ArtifactStore } from "../core/artifacts.js";
 import { Ledger } from "../core/ledger.js";
 import { Router } from "./router.js";
@@ -17,7 +19,7 @@ const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 
 const flag = (n: string) => args.includes(n);
 
 function printEvent(e: { kind: string; detail: string }) {
-  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…" }[e.kind] ?? "•";
+  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!" }[e.kind] ?? "•";
   process.stderr.write(`  ${tag} ${e.detail}\n`);
 }
 
@@ -31,7 +33,7 @@ async function chat(session: SessionData) {
     if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /compact  /stats  /quit"); continue; }
+      if (c === "help") { console.log("/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
       if (c === "fork") { const child = forkSession(session, arg || `fork-${session.turns.length}`); console.log(`forked → ${child.id} (${child.title}); now on branch`); session = child; continue; }
       if (c === "merge") { const b = findSession(arg); if (!b) { console.log("no such branch"); continue; } const blk = mergeSession(b, session); console.log(`merged "${b.title}" into ${session.title}:\n${blk.text}`); continue; }
       if (c === "discard") { if (!session.parent) { console.log("not a branch"); continue; } discardSession(session); const p = loadSession(session.parent)!; console.log(`discarded; back on ${p.title}`); session = p; continue; }
@@ -43,12 +45,23 @@ async function chat(session: SessionData) {
         applyKnobChange(`session:${session.id}`, changes, "user", "cli"); console.log("ok", changes); continue;
       }
       if (c === "profile") { if (!(arg in PROFILES)) { console.log("profiles: " + Object.keys(PROFILES).join(", ")); continue; } session.knobs = { ...PROFILES[arg] }; saveSession(session); console.log(`profile ${arg} applied to session`); continue; }
+      if (c === "strategy") {
+        if (!arg) { const cur = knobsFor({ project: session.cwd, session: session.id }).strategy; console.log(`strategy = ${cur}`); for (const [n, st] of Object.entries(STRATEGIES)) console.log(`  ${n.padEnd(12)} ${st.description}`); continue; }
+        if (!(arg in STRATEGIES)) { console.log("strategies: " + Object.keys(STRATEGIES).join(", ")); continue; }
+        session.knobs = { ...(session.knobs ?? {}), strategy: arg }; saveSession(session); console.log(`strategy ${arg} applied to this session`); continue;
+      }
       if (c === "compact") { session.window = session.window.slice(-2); saveSession(session); console.log("window trimmed; next turn starts from digest"); continue; }
       if (c === "stats") { const t = session.turns; const u = t.reduce((a, x) => ({ input: a.input + x.usage.input, cached: a.cached + x.usage.cached, output: a.output + x.usage.output }), { input: 0, cached: 0, output: 0 }); console.log(`turns=${t.length} steps=${t.reduce((a, x) => a + x.steps, 0)} input=${u.input} cached=${u.cached} (${(100 * u.cached / Math.max(1, u.input)).toFixed(0)}%) output=${u.output} window=${session.window.length} files=${session.state.filesTouched.length}`); continue; }
       console.log("unknown command"); continue;
     }
-    const r = await runTurn({ session, userText: line, onText: (t) => process.stdout.write(t), onEvent: printEvent });
-    if (!r.text.includes("[model error]")) process.stdout.write("\n");
+    const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any);
+    const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
+    const strat = strategyFor(knobs.strategy);
+    const r = strat.name === "react"
+      ? await runTurn({ session, userText: line, knobs, store, ledger, router, onText: (t) => process.stdout.write(t), onEvent: printEvent })
+      : await strat.run({ session, userText: line, knobs, store, ledger, router, onEvent: printEvent });
+    if (strat.name !== "react") process.stdout.write(r.text + "\n");
+    else if (!r.text.includes("[model error]")) process.stdout.write("\n");
     else console.log(r.text);
     console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output} · cost≈${Math.round(r.costEquiv)}]`);
   }
@@ -62,6 +75,8 @@ async function main() {
     console.log(`th chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]   interactive session with fork/merge
 th run "task" [--session id] [--cwd dir] [--prompt-file f] [--max-steps n]   one-shot turn
 th map --task "..." (--items a,b,c | --items-file f) [--parallel 3]   map-reduce: fresh context per item
+th compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]   same tasks, every strategy, scored by the task's own acceptance command
+th strategies                                         list execution strategies
 th sessions | th fork <id> <name> | th merge <branch> <main> | th discard <id>
 th knobs [--project p] [k=v ...]
 th login | th logout | th whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
@@ -107,6 +122,18 @@ th config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_
     await Promise.all(Array.from({ length: Math.min(par, items.length) }, worker));
     console.log(results.join("\n\n")); return;
   }
+  if (cmd === "strategies") { for (const [n, st] of Object.entries(STRATEGIES)) console.log(`${n.padEnd(14)} ${st.description}`); return; }
+  if (cmd === "compare") {
+    const tf = opt("--tasks"); if (!tf) throw new Error("--tasks file.json|file.jsonl required");
+    const tasks = loadTasks(tf);
+    const strategies = (opt("--strategies") ?? "react,plan_verify").split(",").map((s2) => s2.trim()).filter(Boolean);
+    for (const s2 of strategies) strategyFor(s2);          // fail fast on a typo
+    const rep = await compareStrategies({ tasks, strategies, cwd, copy: flag("--copy"), maxSteps: opt("--max-steps") ? Number(opt("--max-steps")) : undefined, onEvent: printEvent });
+    console.log("\n" + formatCompare(rep));
+    const saved = opt("--json"); if (saved) { writeFileSync(saved, JSON.stringify(rep, null, 2)); console.log(`\nwrote ${saved}`); } else console.log(`\nwrote ${saveCompare(rep)}`);
+    return;
+  }
+
   let session: SessionData | undefined = opt("--session") ? findSession(opt("--session")!) : undefined;
   if (!session) { session = newSession(cwd, opt("--title")); saveSession(session); }
   if (opt("--model")) { session.knobs = { ...(session.knobs ?? {}), main_model: opt("--model") }; saveSession(session); }
@@ -116,7 +143,19 @@ th config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_
     const skipIdx = new Set<number>(); flags.forEach((f) => { const i = args.indexOf(f); if (i >= 0) { skipIdx.add(i); skipIdx.add(i + 1); } });
     const text = opt("--prompt-file") ? readFileSync(opt("--prompt-file")!, "utf8") : args.slice(1).filter((a, i) => !skipIdx.has(i + 1) && !a.startsWith("--")).join(" ");
     const maxSteps = opt("--max-steps") ? Number(opt("--max-steps")) : undefined;
-    const r = await runTurn({ session, userText: text, maxSteps, onText: (t) => process.stdout.write(t), onEvent: printEvent }); if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) console.log(r.text); console.log(`\n[${session.id} · ${r.steps} steps · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}]`); return; }
+    const sname = opt("--strategy") ?? resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any).strategy;
+    const strat = strategyFor(sname);
+    let r;
+    if (strat.name === "react") {
+      r = await runTurn({ session, userText: text, maxSteps, onText: (t) => process.stdout.write(t), onEvent: printEvent });
+    } else {
+      const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), { ...(session.knobs as any), strategy: sname });
+      const ledger = new Ledger(); const store = new ArtifactStore();
+      r = await strat.run({ session, userText: text, knobs, store, ledger, router: new Router(knobs, ledger), maxSteps, onEvent: printEvent });
+      console.log(r.text);
+    }
+    if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) console.log(r.text);
+    console.log(`\n[${session.id} · ${strat.name} · ${r.steps} model calls · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}]`); return; }
   await chat(session);
 }
 main().catch((e) => { console.error(e); process.exit(1); });

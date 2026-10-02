@@ -9,6 +9,8 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 | **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `th-proxy` |
 | **harness** | own agent loop: per-turn rebuild (fixed prompt + state digest + folded window), blocking `run`/`wait` instead of polling, read cache, `delegate` to cheaper models with escalation, session **fork / merge / discard**, map-reduce with fresh contexts | `th` |
 | **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `th-sidecar` |
+| **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `th-sidecar price`, `price-probe` |
+| **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `th compare` scores them on an external oracle | `th run --strategy`, `th compare` |
 | **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `th-dash` |
 | **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `th login`, `th config` |
 
@@ -17,7 +19,7 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 32 tests: core, harness loop (mock model), proxy, upstream (OAuth/transport, chat adapter), sidecar, dashboard
+npm test                                  # 51 tests: core, harness loop, strategies, proxy, upstream (OAuth/transport, chat adapter), meter, price, sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
@@ -189,18 +191,193 @@ CI: [`.github/workflows/ci.yml`](../.github/workflows/ci.yml) (typecheck + test 
 verifies the tag matches `package.json`, packages, and attaches the artifacts to the release;
 also runnable by hand with `workflow_dispatch` for an existing tag).
 
+## 7. Strategies: how a turn is organised
+
+ReAct — one agent, one growing context, think/act/observe until done — is the default
+because it is what every client does, not because it is best. `src/harness/strategies`
+makes it one option among several.
+
+```bash
+npx tsx src/harness/cli.ts strategies                      # what is available
+npx tsx src/harness/cli.ts run --strategy plan_verify "make the failing test pass"
+# in chat:  /strategy plan_verify
+# or persist it:  npx tsx src/harness/cli.ts knobs strategy=plan_verify
+```
+
+### plan_verify
+
+A strong model plans, cheap models execute in fresh contexts, and an independent agent
+verifies:
+
+```
+planner (T4, reads the repo, no edit tools)
+   └─ plan: steps, each with inputs, an ACCEPTANCE COMMAND, and what to check
+        ├─ worker s1 (T3, fresh context: sees only its own step contract)
+        │     ├─ acceptance command runs → non-zero? the worker is sent back with the output
+        │     └─ verifier s1 (fresh context, no edit tools, never sees the worker's report)
+        │           └─ objections? the worker is sent back with them (argue_rounds)
+        │              still failing? the worker escalates to T4, then the step fails
+        ├─ worker s2 … (independent steps run in parallel, plan_parallel)
+        └─ a step that cannot pass triggers one bounded replan of the remainder
+```
+
+Two rules are structural, not stylistic:
+- **Acceptance is a command, not an opinion.** A step is done when something exits 0.
+  With `verify_requires_command=true` (default) a step with no command is reported
+  unverified rather than passed.
+- **The verifier never sees the worker's reasoning or self-report** — only the contract,
+  the files that changed and the command output, and it runs the command itself. A
+  verifier reading "I fixed it, all tests pass" is a rubber stamp that costs money and
+  buys nothing. An unparseable verdict fails closed.
+
+Knobs: `plan_max_steps` (how long the planner may look before planning), `plan_min_tasks` /
+`plan_max_tasks`, `plan_parallel`, `worker_tier`, `verifier_tier`, `argue_rounds`,
+`replan_limit`, `verify_requires_command`.
+
+### Why it is cheaper, and when it is not
+
+Per-turn rebuild fixes `C0`. Once `C0` is small, the `n²/2·(o+a)` term is what is left,
+and splitting n steps across k verified steps divides it by k — each worker's context
+carries n/k steps, not n:
+
+```
+ReAct        n·C0 + n²/2·(o+a)                  one context, pays the quadratic in full
+plan_verify  n·C0_worker + n²/(2k)·(o+a)        plus a planner and k verifiers
+```
+
+`python3 bench/topology.py` prints the crossover from this machine's measured averages:
+
+```
+ steps n   k         ReAct   plan_verify   ratio  cheaper
+      10   2       113,000       209,440    1.85  ReAct
+      20   4       366,000       337,880    0.92  plan_verify
+      29   6       713,400       466,320    0.65  plan_verify
+     100   8     7,430,000     1,628,520    0.22  plan_verify
+```
+
+So: **below ~15-20 steps the planning and verification overhead is pure loss; above it
+plan_verify wins, and the gap keeps widening.** The planner (~81K at n=29) and the
+verifiers (~122K) are a fixed cost that does not shrink with the task.
+
+These are estimates of token flow, not of whether the cheap worker actually succeeds —
+which is the part that decides if the strategy is worth it at all. That is what `compare`
+measures.
+
+### Comparing strategies on real tasks
+
+```bash
+cat > tasks.jsonl <<'EOF'
+{"name":"fix-parser","prompt":"make tests/test_parser.py pass","acceptance":"pytest -q tests/test_parser.py","cwd":"/path/to/repo"}
+{"name":"add-flag","prompt":"add a --dry-run flag to cli.py and test it","acceptance":"pytest -q tests/test_cli.py","setup":"pip install -e ."}
+EOF
+npx tsx src/harness/cli.ts compare --tasks tasks.jsonl --strategies react,plan_verify --copy
+```
+
+The scoring rule is the point: a strategy is **never asked whether it succeeded**. The
+task's own `acceptance` command is run afterwards and that exit code is the only verdict,
+so plan_verify cannot score itself on the verifier it paid for. `--copy` gives every run
+its own workspace copy, so run order cannot let one strategy inherit another's edits.
+
+The report gives pass rate, model calls, cost-equivalent across *every* agent the strategy
+ran (planner, workers, verifiers, argue rounds — overhead cannot hide), cost per pass, and
+wall time. It also flags the dangerous case explicitly: a run that **claimed verified but
+failed the oracle** — the verifier was fooled, which is worse than a plain failure.
+
+Results are written to `~/.token_harness/compare-<ts>.json`, and every model call carries
+`extra.strategy` in the ledger, so `th-sidecar report` and the dashboard break down by
+strategy too.
+
+## 8. Measuring the real price
+
+Everything else in this repo optimises a cost model whose weights are a guess. `PRICE` in
+`src/core/ledger.ts` is `0.1 / 1 / 8` — the public pay-as-you-go *shape* — and a subscription
+is not billed that way. Worse, the cheapest model might be several times cheaper than the
+default and nothing here would know. So: measure it.
+
+### What the backend actually tells you
+
+Every Codex response carries these headers, and `th-proxy` now records them per ledger row
+(`credits_balance`, `credits_spent`, `primary_used_percent`, `secondary_used_percent`,
+`plan_type`, `active_limit`, `effort`):
+
+| header | what it is | useful for pricing? |
+|---|---|---|
+| `x-codex-{primary,secondary}-used-percent` | **integer** 0..100 of a window (5h / weekly) | **no** |
+| `x-codex-credits-balance` | credit balance, 10 decimal places | yes, in aggregate |
+| `x-codex-credits-has-credits` / `-unlimited` | whether credits are in play | precondition |
+| `x-codex-plan-type`, `x-codex-active-limit` | `pro`, `premium`, … | segmentation |
+
+Why the percentage is not usable, measured over 2,155 local sessions:
+
+- it is an integer, so one observation is a 1% quantum of a window;
+- fitting `%quota = a·cached + b·uncached + c·output` tick-to-tick gives a **negative R²**
+  (−4.0 weekly, −2.7 on the 5h window) — worse than predicting the mean;
+- the spread *within* one model/effort is as large as the spread *between* models
+  (`gpt-5.4/xhigh`: IQR 0.02M–1.15M cost-equivalent per 1%), so price is not identified;
+- **15% of ticks moved with zero local responses** — other devices spend the same quota, and
+  that term is unobservable from here.
+
+The credits balance is the only fine-grained meter, but it is **eventually consistent**:
+consecutive responses often show a delta of 0 and then a lump (lag-0 correlation with
+cost-equivalent 0.61, lag-1 0.08). Per-request attribution is impossible; only the sum over a
+burst means anything, and even per session it varied 9× for one model because concurrent
+sessions share the pool.
+
+### Passive estimate, with refusals
+
+```bash
+npx tsx src/sidecar/cli.ts price [--since ISO] [--min-bursts 4] [--max-gap 120] [--json]
+```
+
+Groups ledger rows into bursts (cut by a model/effort change, a balance increase, or a gap over
+`--max-gap` seconds) and estimates credits per 1M cost-equivalent per model. It **refuses**
+rather than guessing: no meter headers, too few bursts, a model switch inside the balance lag
+window, or any foreign session overlapping a burst. It also refuses to split cached / uncached /
+output unless the token mix actually varies across bursts — on normal traffic every burst is
+~95% cached, the three regressors are collinear, and any split would be fiction. A refusal
+exits **1**, so a script cannot mistake it for a price.
+
+### The controlled experiment
+
+```bash
+npx tsx src/sidecar/cli.ts price-probe --models gpt-5.6-sol,gpt-5.4-mini --n 8 --settle 20
+npx tsx src/sidecar/cli.ts price-probe --models gpt-5.6-sol --n 8 --go      # spends real credits
+```
+
+Dry run unless `--go` (and `--dry-run` beats `--go`). The protocol is what makes the number
+trustworthy:
+
+1. **Quiet account.** Reading the meter is itself a request — the backend publishes it on
+   response headers and nowhere else — so "sample with no traffic" is impossible. Instead two
+   consecutive idle windows of `--settle` seconds run the same number of identical polls: they
+   calibrate what one poll costs (subtracted from every phase), and if they disagree by more
+   than 50% something else is spending and the probe aborts.
+2. **Three shapes** to separate the weights: a long repeated prefix (cached), a unique long
+   input every call (uncached), a tiny input with a long forced output (output).
+3. **Burst, then wait for the balance to settle** before reading it. This is the step that
+   defeats eventual consistency.
+4. Solve the 3×3 per model with non-negative least squares, write `~/.token_harness/prices.json`
+   with provenance: when, account, plan, n, settle, per-shape token counts and credits,
+   residual, and the poll overhead that was subtracted.
+
+Until that file exists, price-based model routing stays off — a router acting on invented
+prices is worse than no router.
+
 ## Layout
 
 ```
 src/core      items, tokens, artifacts, shapers, knobs, ledger, cache_state, judge, summary, rewrite
 src/proxy     server (Responses proxy + recall), cli
 src/harness   providers (OpenAI Responses / Anthropic), tools, session (DAG, fork/merge), router, loop, cli
-src/sidecar   metrics, tuner, cli
+src/harness/strategies  react (baseline), plan_verify (planner / worker / independent verifier)
+src/harness/compare.ts  strategy A/B scored by each task's own acceptance command
+src/sidecar   metrics, tuner, price (aggregate estimator with refusals), cli
 src/dashboard live (ledger fold + tailer), ui (the page), server (SSE), cli
-src/upstream  config (provider resolution), codex_auth (OAuth PKCE login, refresh, credential files), codex (transport), chat (Responses ⇄ Chat Completions adapter), sse (collector), login_cli
-bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: compression off vs on, same model, judged with hidden tests
+src/upstream  meter (quota/billing headers), price_probe (the controlled experiment), config (provider resolution), codex_auth (OAuth PKCE login, refresh, credential files), codex (transport), chat (Responses ⇄ Chat Completions adapter), sse (collector), login_cli
+bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: arms off / on / tight, same model, judged with hidden tests
 src/bench     replay
 bench/        codex_session_stats.py (the analysis that produced DESIGN.md §2)
+bench/topology.py      ReAct vs plan_verify token arithmetic and the crossover
 test/         node:test suites with a mock Responses server
 scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
 .github/      ci and release workflows

@@ -32,6 +32,12 @@ Rules that save tokens and time:
 export interface TurnOptions {
   session: SessionData; userText: string; knobs?: Knobs; store?: ArtifactStore; ledger?: Ledger; router?: Router;
   tier?: Tier; maxSteps?: number; onText?: (t: string) => void; onEvent?: (e: { kind: string; detail: string }) => void; quiet?: boolean;
+  /** replace the fixed prompt (planner and verifier agents have their own) */
+  instructions?: string;
+  /** restrict the tool set, e.g. a planner that must not edit, a verifier that must not fix */
+  toolNames?: string[];
+  /** merged into every ledger row's `extra`, so a strategy's rows can be told apart */
+  tag?: Record<string, unknown>;
 }
 
 export interface TurnResult { text: string; steps: number; usage: { input: number; cached: number; output: number; reasoning: number }; costEquiv: number; items: any[] }
@@ -64,7 +70,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   base.push(...session.window);
   const items: any[] = [...base, { type: "message", role: "user", content: [{ type: "input_text", text: o.userText }] }];
   const rwState = { ...newRewriteState(session.id + ":" + turnIdx), stubs: session.rewriteState.stubs, userMsgCount: 0 };
-  const toolDefs = tier === "T4" ? TOOL_DEFS : TOOL_DEFS.filter((t) => t.name !== "delegate");
+  const instructions = o.instructions ?? FIXED_PROMPT;
+  let toolDefs = tier === "T4" ? TOOL_DEFS : TOOL_DEFS.filter((t) => t.name !== "delegate");
+  if (o.toolNames) toolDefs = TOOL_DEFS.filter((t) => o.toolNames!.includes(t.name));
   let finalText = ""; let steps = 0; let costEquiv = 0; let notes: string | undefined;
   const maxSteps = o.maxSteps ?? route.maxSteps;
 
@@ -72,13 +80,13 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     const rw = rewrite(items, { knobs, store, state: rwState, now: Date.now(), settingsHash: route.model + route.effort });
     let resp: ModelResponse;
     try {
-      resp = await client.respond({ model: route.model, instructions: FIXED_PROMPT, input: rw.input, tools: toolDefs, reasoningEffort: route.effort, promptCacheKey: session.id, onText: o.onText });
+      resp = await client.respond({ model: route.model, instructions, input: rw.input, tools: toolDefs, reasoningEffort: route.effort, promptCacheKey: session.id, onText: o.onText });
     } catch (e: any) {
       finalText = `[model error] ${e?.message ?? e}`; break;
     }
     steps++; rec.steps = steps;
     rec.usage.input += resp.usage.input; rec.usage.cached += resp.usage.cached; rec.usage.output += resp.usage.output; rec.usage.reasoning += resp.usage.reasoning;
-    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier } };
+    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier, ...o.tag } };
     ledger.append(row); costEquiv += resp.usage.cached * 0.1 + (resp.usage.input - resp.usage.cached) + resp.usage.output * 8;
     items.push(...resp.output);
     if (resp.calls.length === 0) { finalText = resp.text; break; }

@@ -60,6 +60,10 @@ export const UI_HTML = String.raw`<!doctype html>
   .ev.compact { color: var(--accent); border-color: var(--accent); }
   .ev.dedupe, .ev.poll_collapse, .ev.shape { color: var(--good); }
   .ev.recall { color: var(--warn); }
+  .ev.plan, .ev.replan { color: var(--accent); }
+  .ev.verify { color: var(--good); }
+  .ev.argue { color: var(--warn); }
+  .ev.strategy { color: var(--fg); border-color: var(--accent); }
   .legend { display: flex; gap: 14px; font-size: 11.5px; color: var(--dim); font-family: var(--mono); }
   .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
   .bar { height: 8px; border-radius: 4px; background: var(--panel2); overflow: hidden; border: 1px solid var(--line); }
@@ -91,6 +95,10 @@ export const UI_HTML = String.raw`<!doctype html>
       <div class="panel">
         <h2><span>Sessions</span><span class="hint">click a row to chart it</span></h2>
         <div id="sessions"></div>
+      </div>
+      <div class="panel" id="stratPanel" hidden>
+        <h2><span>By strategy</span><span class="hint">cost of every agent it ran · pass rate from each run's own oracle</span></h2>
+        <div id="strategies"></div>
       </div>
     </div>
     <div>
@@ -180,6 +188,22 @@ function sessions(list) {
   el.querySelectorAll("tr[data-sid]").forEach(tr => tr.onclick = () => { selected = tr.dataset.sid; render(latest); });
 }
 
+function strategies(list) {
+  const p = document.getElementById("stratPanel");
+  if (!list || !list.length) { p.hidden = true; return; }
+  p.hidden = false;
+  document.getElementById("strategies").innerHTML =
+    '<table><thead><tr><th>strategy</th><th>runs</th><th>pass</th><th>calls</th><th>cost-equiv</th><th>per pass</th><th>phases</th></tr></thead><tbody>' +
+    list.map(s => {
+      const ph = Object.entries(s.phases || {}).sort((a,b) => b[1]-a[1]).map(([k,v]) => k + " " + v).join(", ");
+      return '<tr><td>' + esc(s.strategy) + '</td><td>' + (s.runs || 0) + '</td>' +
+        '<td class="' + (s.runs && s.passed === s.runs ? "gain" : s.runs ? "" : "idle-badge") + '">' + (s.runs ? s.passed + "/" + s.runs : "-") + '</td>' +
+        '<td>' + s.responses + '</td><td>' + fmt(s.cost) + '</td>' +
+        '<td>' + (s.costPerPass ? fmt(s.costPerPass) : "-") + '</td>' +
+        '<td style="text-align:left;color:var(--dim)">' + esc(ph) + '</td></tr>';
+    }).join("") + '</tbody></table>';
+}
+
 function feed(rows) {
   const el = document.getElementById("feed");
   if (!rows.length) { el.innerHTML = '<li class="empty">nothing folded yet</li>'; return; }
@@ -206,6 +230,7 @@ function render(snap) {
   if (!selected || !snap.sessions.some(s => s.session === selected)) selected = snap.sessions[0] ? snap.sessions[0].session : null;
   chart(snap.sessions.find(s => s.session === selected));
   sessions(snap.sessions);
+  strategies(snap.byStrategy);
   feed(snap.feed);
   events(snap.byEvent);
   document.getElementById("meta").textContent = snap.rows + " ledger rows · " + (snap.window.from ? snap.window.from.slice(0,16).replace("T"," ") + " → " + snap.window.to.slice(11,19) : "empty");

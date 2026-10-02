@@ -14,8 +14,12 @@ export const ACTIVE_WINDOW_S = 120;
 const SERIES_MAX = 240;
 const EVENTS_MAX = 60;
 
-/** Events worth showing in the feed: each one is a token saving with a cause. */
-const SAVING_EVENTS = new Set(["compact", "shape", "dedupe", "poll_collapse", "wait", "recall", "delegate", "merge", "fork", "knob_change"]);
+/**
+ * Events worth showing in the feed: a token saving with a cause, or a decision a
+ * strategy made (planning, a step, a verification, an argue round, a replan).
+ */
+const FEED_EVENTS = new Set(["compact", "shape", "dedupe", "poll_collapse", "wait", "recall", "delegate", "merge", "fork", "knob_change",
+  "plan", "step", "verify", "argue", "replan", "strategy"]);
 
 export interface SeriesPoint { t: number; step: number; before: number; after: number; cost: number }
 
@@ -49,6 +53,18 @@ export interface LiveTotals {
   savedTokens: number; savedCost: number; multiplier: number;
 }
 
+export interface StrategyStats {
+  strategy: string;
+  /** model calls across every agent the strategy ran */
+  responses: number;
+  input: number; cached: number; output: number;
+  cost: number; baseline: number;
+  /** completed runs, from the strategy's own rollup rows */
+  runs: number; passed: number;
+  phases: Record<string, number>;
+  costPerPass?: number;
+}
+
 export interface LiveSnapshot {
   now: string;
   ledger: string;
@@ -60,6 +76,8 @@ export interface LiveSnapshot {
   feed: Array<{ ts: string; session: string; turn: number; step: number; event: string; note?: string; saved?: number; model?: string }>;
   byModel: Record<string, { responses: number; input: number; output: number; cost: number }>;
   byEvent: Record<string, number>;
+  /** only populated once a strategy has tagged its rows (plan_verify, compare runs) */
+  byStrategy: StrategyStats[];
 }
 
 /**
@@ -77,6 +95,7 @@ function rowBaseline(r: LedgerRow): number {
 export class LiveState {
   readonly sessions = new Map<string, LiveSession>();
   feed: LiveSnapshot["feed"] = [];
+  readonly strategies = new Map<string, StrategyStats>();
   rows = 0;
   from?: string;
   to?: string;
@@ -119,7 +138,22 @@ export class LiveState {
       if (s.series.length > SERIES_MAX) s.series.splice(0, s.series.length - SERIES_MAX);
     }
 
-    if (r.event && SAVING_EVENTS.has(r.event)) {
+    // a strategy tags every model call it makes, so its overhead cannot hide
+    const sname = (r.extra as any)?.strategy;
+    if (typeof sname === "string" && sname) {
+      let st = this.strategies.get(sname);
+      if (!st) { st = { strategy: sname, responses: 0, input: 0, cached: 0, output: 0, cost: 0, baseline: 0, runs: 0, passed: 0, phases: {} }; this.strategies.set(sname, st); }
+      if (counted) {
+        st.responses++; st.input += r.input ?? 0; st.cached += r.cached ?? 0; st.output += r.output ?? 0;
+        st.cost += r.cost_equiv ?? costEquiv(r); st.baseline += rowBaseline(r);
+      }
+      const phase = (r.extra as any)?.phase;
+      if (typeof phase === "string") st.phases[phase] = (st.phases[phase] ?? 0) + 1;
+      // the rollup row of a finished run carries the verdict
+      if (r.event === "strategy") { st.runs++; if (r.task_outcome === "success") st.passed++; }
+    }
+
+    if (r.event && FEED_EVENTS.has(r.event)) {
       const saved = r.ctx_before !== undefined && r.ctx_after !== undefined ? r.ctx_before - r.ctx_after : undefined;
       this.feed.push({ ts: r.ts, session: r.session, turn: r.turn ?? 0, step: r.step ?? 0, event: r.event, note: r.note, saved, model: r.model });
       if (this.feed.length > EVENTS_MAX) this.feed.splice(0, this.feed.length - EVENTS_MAX);
@@ -166,6 +200,9 @@ export class LiveState {
       sessions,
       feed: [...this.feed].reverse(),
       byModel, byEvent,
+      byStrategy: [...this.strategies.values()]
+        .map((st) => ({ ...st, costPerPass: st.passed ? st.cost / st.passed : undefined }))
+        .sort((a, b) => b.cost - a.cost),
     };
 
     if (this.weeklyBudget > 0) {

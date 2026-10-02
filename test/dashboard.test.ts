@@ -38,6 +38,40 @@ test("live state: per-session effect, baseline, multiplier, feed", () => {
   assert.equal(s.byEvent.compact, 1);
 });
 
+test("live state: strategy rows aggregate separately, with pass rate from the rollup row", () => {
+  const st = new LiveState("/tmp/none.jsonl");
+  // plan_verify: a planner call, two worker calls, a verifier call, then its rollup
+  st.ingest(row({ step: 1, input: 10_000, cached: 0, uncached: 10_000, output: 300, ctx_before: 10_000, ctx_after: 10_000, event: "response", extra: { strategy: "plan_verify", phase: "plan" } }));
+  st.ingest(row({ step: 2, input: 3_000, cached: 1_000, uncached: 2_000, output: 100, ctx_before: 3_000, ctx_after: 3_000, event: "response", extra: { strategy: "plan_verify", phase: "step" } }));
+  st.ingest(row({ step: 3, input: 3_000, cached: 1_000, uncached: 2_000, output: 100, ctx_before: 3_000, ctx_after: 3_000, event: "response", extra: { strategy: "plan_verify", phase: "step" } }));
+  st.ingest(row({ step: 4, input: 2_000, cached: 0, uncached: 2_000, output: 80, event: "response", extra: { strategy: "plan_verify", phase: "verify" } }));
+  // plus the phase marker rows the strategy writes so cost can be attributed
+  st.ingest(row({ step: 1, event: "plan" as any, note: "2 steps: s1,s2", extra: { strategy: "plan_verify", phase: "plan" } }));
+  st.ingest(row({ step: 4, event: "verify" as any, note: "s1: pass", task_outcome: "success", extra: { strategy: "plan_verify", phase: "verify" } }));
+  st.ingest(row({ step: 4, event: "strategy" as any, task_outcome: "success", extra: { strategy: "plan_verify", phase: "strategy" } }));
+  // react on another task, which failed
+  st.ingest(row({ session: "s9", step: 1, input: 50_000, cached: 40_000, uncached: 10_000, output: 500, event: "response", extra: { strategy: "react" } }));
+  st.ingest(row({ session: "s9", step: 2, event: "strategy" as any, task_outcome: "fail", extra: { strategy: "react" } }));
+
+  const s = st.snapshot();
+  assert.equal(s.byStrategy.length, 2);
+  const pv = s.byStrategy.find((x) => x.strategy === "plan_verify")!;
+  assert.equal(pv.responses, 4, "every agent the strategy ran is counted");
+  assert.equal(pv.runs, 1);
+  assert.equal(pv.passed, 1);
+  assert.equal(pv.phases.step, 2, "both workers counted");
+  assert.ok(pv.phases.plan >= 1 && pv.phases.verify >= 1 && pv.phases.strategy === 1, JSON.stringify(pv.phases));
+  assert.ok(pv.costPerPass && pv.costPerPass > 0);
+  const re = s.byStrategy.find((x) => x.strategy === "react")!;
+  assert.equal(re.runs, 1);
+  assert.equal(re.passed, 0);
+  assert.equal(re.costPerPass, undefined, "no passes means no cost-per-pass, not a divide by zero");
+  // the phase markers reach the feed, so planning and verification stream live
+  assert.ok(s.feed.some((f) => f.event === "verify"), JSON.stringify(s.feed.map((f) => f.event)));
+  assert.ok(s.feed.some((f) => f.event === "plan"));
+  assert.ok(s.feed.some((f) => f.event === "strategy"));
+});
+
 test("live state: a row with no token numbers still registers the session and event", () => {
   const st = new LiveState("/tmp/none.jsonl");
   st.ingest(row({ event: "knob_change", note: "window 8 → 6" }));

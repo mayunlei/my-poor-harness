@@ -88,9 +88,10 @@ therefore one warm prefix.
 **6. Never trade accuracy for tokens.**
 An earlier round of ablations showed plain truncation and aggressive summarization lose task
 success; those variants were rejected and stay rejected. Anything that compresses here has to
-survive a quality regression (SWE-bench Lite, compression off vs on, same model, judged by
-hidden tests) before it goes on by default. Cheap and wrong is not cheap — you pay for the
-retry.
+survive a quality regression before it goes on by default — SWE-bench Lite dev, 23 tasks,
+compression off vs on vs tight, same model, graded by the hidden tests. It has: **8 / 10 / 10
+accepted**, no task ever going from pass to fail because of compression. Cheap and wrong is
+not cheap — you pay for the retry.
 
 **7. Measure offline, on real trajectories, before spending a cent.**
 2,128 recorded sessions are a free benchmark. The replay harness rebuilds every request of a
@@ -102,6 +103,23 @@ provenance for every change it makes.
 **8. Show me the money, live.**
 A saving you can't see is a saving you won't trust. `th-dash` tails the ledger and shows the
 quota stretch, the tokens that were never sent, and every fold as it happens — see below.
+
+**9. ReAct is a default, not a law.**
+Think/act/observe in one growing context became universal when models could not hold a plan
+together for more than a few steps. That constraint has moved, and the cost model says the
+topology is worth revisiting: once per-turn rebuild has fixed `C0`, the `n²` term is what
+is left, and splitting a task across k independently verified steps divides it by k — each
+worker's context carries n/k steps instead of n. So `plan_verify` has a strong model plan
+and write the acceptance criteria, cheap models execute each step in a fresh context, and
+an **independent verifier** — which never sees the worker's self-report and runs the
+commands itself — argues with the worker until the evidence holds. Acceptance is a command,
+not an opinion; a verifier that reads "I fixed it, all tests pass" is a rubber stamp.
+`python3 bench/topology.py` puts the crossover near 15-20 steps: below it the verification
+overhead is pure loss, at the average 29-step turn it is ~0.65× ReAct, at 100 steps ~0.22×.
+Those are token estimates, not proof that the cheap worker succeeds — so `th compare` runs
+the same tasks under every strategy and scores them with each task's own acceptance
+command, never with the strategy's own claim. Strategies are a knob because the answer is
+task-dependent and should be measured, not argued about.
 
 ## Quickstart
 
@@ -131,7 +149,7 @@ Verify what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                      # 32 tests, no network, no API key
+npm test                      # 51 tests, no network, no API key
 npm run dash -- --open        # live dashboard
 npm run proxy                 # th-proxy on :8791
 npm run bench:replay -- --limit 30 --min-bytes 200000   # offline savings on your own sessions
@@ -208,16 +226,34 @@ in CI, checks the tag matches `package.json`, and attaches them to the release.
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | login and config, the proxy, the harness loop, the sidecar, the replay bench, all the knobs |
 | [docs/DESIGN.md](docs/DESIGN.md) | the full design doc (Chinese): the session analysis, the token arithmetic, the layer-by-layer plan |
+| [docs/USAGE.md#7-strategies-how-a-turn-is-organised](docs/USAGE.md) | the planner / worker / verifier strategy, its knobs, and how to A/B it against ReAct |
 
-Four layers, each usable on its own: `src/core` (the pure rewrite), `src/proxy` (transparent
+Five layers, each usable on its own: `src/core` (the pure rewrite), `src/proxy` (transparent
 `/v1/responses` proxy — point Codex Desktop/CLI at it and nothing else changes), `src/harness`
 (own loop, session fork/merge, map-reduce), `src/sidecar` (reads the ledger, tunes the knobs),
-plus `src/dashboard` (the live view) and `src/upstream` (built-in ChatGPT-OAuth Codex transport,
+plus `src/harness/strategies` (ReAct vs planner/worker/verifier, with `th compare` to settle
+it), `src/dashboard` (the live view) and `src/upstream` (built-in ChatGPT-OAuth Codex transport,
 or any OpenAI-compatible endpoint, Chat Completions included).
 
 ## Status
 
-Working and tested (32 tests, no network needed): rewrite core, proxy, agent loop, sidecar,
-dashboard, replay bench, and the Codex/Chat upstreams. The SWE-bench quality regression that
-principle 6 demands is the piece still being run — until it passes, treat the aggressive knobs
-as experimental.
+Working and tested, no network needed for the suite: rewrite core, proxy, agent loop,
+strategies, sidecar, dashboard, replay bench, price metering, and the Codex/Chat upstreams.
+
+**What is measured, and what is not:**
+
+- *Quality gate (principle 6) — passed.* SWE-bench Lite dev, 23 tasks, one run each,
+  qwen3.7-plus: 8 accepted with compression off, 10 with defaults, 10 with aggressive knobs.
+  Nothing regressed from pass to fail. Details in [docs/DESIGN.md](docs/DESIGN.md).
+- *Token savings — shown on real sessions, not on SWE-bench.* Replaying recorded Codex
+  sessions gives 1.4-1.8× in proxy mode. On SWE-bench Lite it is unmeasurable, and the honest
+  reason is that those tasks are small: average ~9-10K per step, so only 2 of 23 tasks even
+  triggered a fold at the default 60K budget, and cost-equivalent differed by 5%. Compression
+  pays off on long sessions, which is where the bill came from in the first place.
+- *Per-model price — not measured, and not measurable from the logs.* See
+  [docs/USAGE.md](docs/USAGE.md): the quota percentage is an integer and is shared with other
+  devices, so it cannot identify a price. The credits balance can, under a controlled probe.
+  Until that probe has run, `PRICE` in the ledger is a placeholder, and price-based routing
+  stays off.
+- *plan_verify vs ReAct — modelled, not yet measured on real tasks.* The crossover estimate
+  comes from `bench/topology.py`; `th compare` is the thing that settles it.
