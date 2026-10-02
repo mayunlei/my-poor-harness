@@ -29,7 +29,7 @@ import type { ModelResponse } from "./providers.js";
 export const FIXED_PROMPT = `You are a coding agent working in the user's workspace with a small set of tools.
 Rules that save tokens and time:
 - run(cmd) blocks until the command exits. Never poll: for long processes use run(background=true) then wait(job, until=regex|silence). Do not sleep, ps, or re-run a command just to check progress.
-- Issue independent tool calls together in one response (several reads or greps at once).
+- Put every independent call in ONE response: several reads, greps, ls, or several run() commands at once. Wait for a result only when the next call actually needs it. One call per response is the slowest and most expensive way to work.
 - Do not re-read files you have not changed; earlier outputs you no longer see verbatim are summarized as stubs like [output #id …] — use recall(id, grep=…) when you actually need the detail.
 - Keep tool output small: prefer targeted reads (line ranges), grep with limits, and test commands that print only failures.
 - Prefer delegate(task, inputs, acceptance) for bounded, self-contained subtasks (locate X, run tests and report, mechanical edits).
@@ -71,6 +71,23 @@ function digestItem(session: SessionData, foldedCount: number): any {
   let text = renderSummary(session.state, foldedCount);
   if (session.merged.length) text += "\n" + session.merged.map((m) => `[merged from branch "${m.fromTitle}" at ${m.at.slice(0, 16)}]\n${m.text}`).join("\n");
   return { type: "message", role: "user", content: [{ type: "input_text", text }] };
+}
+
+/**
+ * Run a batch with at most `limit` in flight, results in call order.
+ *
+ * A model that batches well can return a dozen calls at once, and `Promise.all` would
+ * start a dozen processes at the same instant. The synchronous tools (read, edit, grep)
+ * never interleave anyway -- their handlers run to completion inside one microtask -- so
+ * the limit only really bounds run/wait/delegate, which is where it matters.
+ */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) { const i = next++; if (i >= items.length) return; out[i] = await fn(items[i]); }
+  }));
+  return out;
 }
 
 export async function runTurn(o: TurnOptions): Promise<TurnResult> {
@@ -133,17 +150,24 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     }
     steps++; rec.steps = steps;
     rec.usage.input += resp.usage.input; rec.usage.cached += resp.usage.cached; rec.usage.output += resp.usage.output; rec.usage.reasoning += resp.usage.reasoning;
-    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier, ...(mt && steps === 1 ? { segments: mt.segments, gate: mt.gate.action } : {}), ...o.tag } };
+    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, tool_calls: resp.calls.length, tool_kinds: resp.calls.length ? resp.calls.map((c) => c.name) : undefined, extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier, ...(mt && steps === 1 ? { segments: mt.segments, gate: mt.gate.action } : {}), ...o.tag } };
     ledger.append(row); costEquiv += resp.usage.cached * 0.1 + (resp.usage.input - resp.usage.cached) + resp.usage.output * 8;
     items.push(...resp.output);
     if (resp.calls.length === 0) { finalText = resp.text; break; }
     if (!o.quiet && resp.text) o.onEvent?.({ kind: "commentary", detail: resp.text.slice(0, 200) });
-    const outputs = await Promise.all(resp.calls.map(async (c) => {
+    const inFlight = Math.min(Math.max(1, stepKnobs.tool_parallel), resp.calls.length);
+    if (resp.calls.length > 1) {
+      const counts = new Map<string, number>();
+      for (const c of resp.calls) counts.set(c.name, (counts.get(c.name) ?? 0) + 1);
+      const what = [...counts].map(([n, k]) => (k > 1 ? `${n} ×${k}` : n)).join(", ");
+      o.onEvent?.({ kind: "batch", detail: `${resp.calls.length} tool calls in one response (${inFlight} at a time): ${what}` });
+    }
+    const outputs = await mapLimit(resp.calls, inFlight, async (c) => {
       o.onEvent?.({ kind: "tool", detail: `${c.name} ${JSON.stringify(c.args).slice(0, 120)}` });
       if (c.name === "state_update") notes = String(c.args.notes ?? "");
       const out = await executeTool(ctx, c.name, c.args, c.callId);
       return { type: "function_call_output", call_id: c.callId, output: out };
-    }));
+    });
     items.push(...outputs);
   }
   if (!finalText && steps >= maxSteps) finalText = `[stopped after ${maxSteps} steps]`;

@@ -30,6 +30,11 @@ export interface LedgerRow {
         // multi-turn: the turn gate, memory recall/writes, and a broken user-words invariant
         | "gate" | "memory" | "fidelity";
   tool_kind?: string;
+  /** how many tool calls the model returned in this one response, and which: a step with
+   *  tool_calls=4 did four tools' work in one round trip. Without these you cannot tell a
+   *  model that batches from one that goes one call at a time. */
+  tool_calls?: number;
+  tool_kinds?: string[];
   idle_s?: number;
   cache_state?: "warm" | "cold" | "unknown";
   recall_count?: number;

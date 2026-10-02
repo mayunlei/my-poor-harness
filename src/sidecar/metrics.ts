@@ -5,6 +5,9 @@
 import { Ledger, type LedgerRow, costEquiv } from "../core/ledger.js";
 
 export interface Aggregate { rows: number; input: number; cached: number; uncached: number; output: number; cost: number; ctxBefore: number; ctxAfter: number; compactions: number; recalls: number; sessions: number; turns: number;
+  /** tool calls summed over responses that made any, and the widest single response:
+   *  toolCalls / toolSteps is how many tools' work the model got out of one round trip */
+  toolCalls: number; toolSteps: number; widestBatch: number;
   /** real money, when the upstream reports a credits meter: summed balance drops.
    *  The meter is eventually consistent and the pool is shared across devices, so the
    *  total is sound and a single row is not. */
@@ -23,12 +26,13 @@ export interface Report {
 }
 
 function agg(rows: LedgerRow[]): Aggregate {
-  const a: Aggregate = { rows: 0, input: 0, cached: 0, uncached: 0, output: 0, cost: 0, ctxBefore: 0, ctxAfter: 0, compactions: 0, recalls: 0, sessions: 0, turns: 0, credits: 0 };
+  const a: Aggregate = { rows: 0, input: 0, cached: 0, uncached: 0, output: 0, cost: 0, ctxBefore: 0, ctxAfter: 0, compactions: 0, recalls: 0, sessions: 0, turns: 0, toolCalls: 0, toolSteps: 0, widestBatch: 0, credits: 0 };
   const sess = new Set<string>(); const turns = new Set<string>();
   for (const r of rows) {
     if (r.input === undefined && r.ctx_after === undefined) continue;
     a.rows++; a.input += r.input ?? 0; a.cached += r.cached ?? 0; a.uncached += r.uncached ?? 0; a.output += r.output ?? 0; a.cost += r.cost_equiv ?? costEquiv(r);
     a.ctxBefore += r.ctx_before ?? 0; a.ctxAfter += r.ctx_after ?? 0; if (r.event === "compact") a.compactions++; a.recalls += r.recall_count ?? 0;
+    if (r.tool_calls) { a.toolCalls += r.tool_calls; a.toolSteps++; if (r.tool_calls > a.widestBatch) a.widestBatch = r.tool_calls; }
     a.credits += r.credits_spent ?? 0;
     if (r.credits_balance !== undefined) a.creditsBalance = r.credits_balance;
     sess.add(r.session); turns.add(r.session + ":" + r.turn);
@@ -89,6 +93,13 @@ export function formatReport(r: Report): string {
   L.push(`total: ${r.total.rows} responses, ${r.total.sessions} sessions, ${r.total.turns} turns`);
   L.push(`  input ${f(r.total.input)} (cached ${f(r.total.cached)} = ${(100 * r.total.cached / Math.max(1, r.total.input)).toFixed(0)}%), output ${f(r.total.output)}, cost-equiv ${f(r.total.cost)}`);
   if (r.total.ctxBefore) L.push(`  context: client would send ${f(r.total.ctxBefore)} → sent ${f(r.total.ctxAfter)} (×${(r.total.ctxBefore / Math.max(1, r.total.ctxAfter)).toFixed(2)})`);
+  if (r.total.toolSteps) {
+    const per = r.total.toolCalls / r.total.toolSteps;
+    // only a hint, never a verdict: a model that merges three shell commands into one
+    // run() is doing better than one that returns three calls, and both read as 1.00
+    const hint = r.total.toolSteps >= 10 && per < 1.15 ? " — almost every response made a single call; worth checking whether independent work could go out together" : "";
+    L.push(`  tool batching: ${f(r.total.toolCalls)} calls over ${f(r.total.toolSteps)} responses = ${per.toFixed(2)} per round trip (widest ${r.total.widestBatch})${hint}`);
+  }
   if (r.total.credits > 0) L.push(`  credits: ${r.total.credits.toFixed(3)} spent${r.total.creditsBalance !== undefined ? `, ${f(r.total.creditsBalance)} left` : ""}` +
     ` (${(r.total.credits / Math.max(1, r.total.input / 1e6)).toFixed(1)} per 1M input; the meter lags and the pool is shared, so trust the total, not a row)`);
   for (const [src, a] of Object.entries(r.bySource)) L.push(`  ${src}: ${a.rows} rows, cost ${f(a.cost)}, compactions ${a.compactions}, recalls ${a.recalls}`);

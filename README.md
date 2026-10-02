@@ -319,7 +319,7 @@ totals are sound and a single row is not. The page says so, in place.
 ### 6. Report, tune, and measure the price
 
 ```bash
-mph report                         # cost, credits, cache, compaction net effect, pass rates
+mph report                         # cost, credits, cache, compaction net effect, pass rates, tool batching
 mph tune --dry-run                 # what it would change to the knobs, and why
 mph watch --every 900              # report + tune on a loop
 mph price                           # per-model price from the ledger — refuses when it cannot

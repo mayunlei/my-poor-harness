@@ -71,7 +71,7 @@ function positionalAfter(flags: string[]): string[] {
 }
 
 function printEvent(e: { kind: string; detail: string }) {
-  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!", gate: "◇", skill: "✦", memory_miss: "?" }[e.kind] ?? "•";
+  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!", gate: "◇", skill: "✦", memory_miss: "?", batch: "⇉", settings: "◆" }[e.kind] ?? "•";
   process.stderr.write(`  ${tag} ${e.detail}\n`);
 }
 

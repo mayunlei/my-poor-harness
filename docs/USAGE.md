@@ -157,6 +157,63 @@ ChatGPT accounts reject `gpt-5.4`, `gpt-5.4-mini` and the other `*-mini` models 
 
 Strategies (`plan_verify`) and `delegate` workers keep the single-task loop: fixed prompt, state digest, folded window, no transcript or memory.
 
+#### Several calls per response, and what a command costs
+
+One model response can carry many tool calls, and they all run — concurrently, at most
+`tool_parallel` (default 8) in flight, results handed back in call order. Three reads in one
+response cost one round trip, not three. Both prompts tell the model to do this; whether it
+actually does is in `mph report`:
+
+```
+tool batching: 318 calls over 141 responses = 2.26 per round trip (widest 7)
+```
+
+The ledger carries `tool_calls` and `tool_kinds` per response, so that number comes out of your
+own history. One call per response is not automatically bad: a model that merges three shell
+commands into one `run` is doing better than one that returns three calls.
+
+`run(cmd)` used to spawn `bash -lc`, which sources your profile **every time** — 682ms per
+command on the machine this was measured on (conda's init block), against 2ms for `bash -c`. A
+turn with thirty commands spent twenty seconds starting shells. The profile cannot simply be
+dropped: it is what puts conda, nvm and pyenv on `PATH`, and `conda` is a shell *function*. So
+`shell_login` (default `cached`) captures the login shell's environment and its function
+definitions once per process, writes the functions to `~/.mph/shell-functions.sh`, and runs every
+command with plain `bash -c`, that environment and `BASH_ENV` pointing at the functions —
+`conda activate env && pytest` still works. `always` is the old behaviour, `never` skips the
+profile entirely, and a failed capture falls back to `always` rather than to a broken `PATH`.
+
+Waiting for a command is event-driven: a job wakes its waiter on output and on exit, with a 300ms
+tick left only to re-check the silence and deadline conditions. It used to poll, so every command
+— `echo hi` included — cost up to 300ms of waiting for the next poll. Measured on five
+sequential commands: 4,527ms before, 18ms after.
+
+### Saving sessions for backtesting
+
+一句话：把亲身用过、值得复测的真实会话连同完整上下文存进数据集，以后改了 harness 拿同一批对话重放对比。
+
+```bash
+mph save --note "复现：长日志粘贴后过几轮再追问细节，模型找不到原文"            # the latest session in this directory
+mph save s_1a2b3c4d --note "..." --dataset memory-regressions [--id paste-followup]
+mph dataset                      # datasets and how many cases each has
+mph dataset memory-regressions   # one line per case: id, turns, note
+mph dataset show memory-regressions/paste-followup
+```
+
+In `chat`: `/save <一句话注释>` saves the current session to the `default` dataset.
+
+The note is required: one sentence (up to 300 characters) saying what problem the session is about. Each case is a directory under `~/.mph/datasets/<dataset>/<id>/`:
+
+| file | content |
+|---|---|
+| `case.json` | the note, models configured and actually used, knobs, git state at save time, and per turn: the user's words verbatim, the full answer and its card, files changed, steps and tokens, the gate decision, the git HEAD the turn started on |
+| `transcript.jsonl` | the session's transcript |
+| `turns/turn-<n>.json` | everything the model saw and did in that turn: the assembled context, every tool call and output |
+| `ledger.jsonl` | the session's ledger rows |
+| `memory.jsonl` | memories written during the session |
+| `workspace.diff` | uncommitted changes at save time (`git diff HEAD`) |
+
+`<dataset>/index.jsonl` lists the cases with their notes.
+
 ### Multi-turn golden set
 
 ```bash
