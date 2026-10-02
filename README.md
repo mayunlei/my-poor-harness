@@ -132,7 +132,9 @@ task-dependent and should be measured, not argued about.
 
 ## Install
 
-Either grab a release, or build from source. Node ≥ 20.11 either way.
+Either grab a release, or build from source. Node ≥ 24 either way: the memory store uses the
+built-in `node:sqlite`, and its FTS5 full-text index is only compiled in from Node 24 (Node 22
+has `node:sqlite` but answers `no such module: fts5`).
 
 ```bash
 # a) the standalone release: no toolchain, no npm install, no network
@@ -141,7 +143,7 @@ tar xzf my-poor-harness-*-standalone.tar.gz && cd my-poor-harness-*/
 node bin/mph-dash.js --open
 
 # b) the npm tarball, if you want the commands on your PATH
-gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz' --exclude '*standalone*'
+gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz'
 npm install -g ./my-poor-harness-*.tgz        # mph, mph-proxy, mph-dash, mph-sidecar
 ```
 
@@ -306,8 +308,12 @@ reports what would have been saved. Zero model calls, so it costs nothing.
 ```bash
 npm run package                  # → release/: npm tarball, standalone tarball, SHA256SUMS.txt
 npm run release -- --dry-run     # show the tag, artifacts and notes; change nothing
-npm run release -- 0.4.0         # bump, tag, push, create the release, upload the assets
+npm run release -- 0.4.0         # bump + commit, tag, push both, create the release, upload
 ```
+
+`release.sh` refuses a dirty tree, so commit your work first; the version bump itself is
+committed as `v<version>` and the branch is pushed along with the tag, because CI checks the tag
+against the `package.json` of the commit it points at.
 
 | artifact | what it is |
 |---|---|
@@ -316,8 +322,8 @@ npm run release -- 0.4.0         # bump, tag, push, create the release, upload t
 | `SHA256SUMS.txt` | checksums for both |
 
 The staged standalone tree is smoke-tested with plain `node` before it is tarred, so a broken
-build fails packaging instead of failing you. `release.sh` refuses a dirty tree or an existing
-tag, and creates the release before uploading assets (the combined `gh release create` form
+build fails packaging instead of failing you. `release.sh` also refuses an existing tag, and
+creates the release before uploading assets (the combined `gh release create` form
 404s). Pushing a `v*` tag is enough on its own:
 [`.github/workflows/release.yml`](.github/workflows/release.yml) rebuilds the same artifacts in
 CI, checks the tag matches `package.json`, and attaches them.
