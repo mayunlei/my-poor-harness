@@ -117,7 +117,7 @@ test("meterHeaders / codex transport: the meter survives SSE aggregation into a 
     res.end();
   });
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(), refreshToken: "rt", accountId: ACC } }));
-  const t = new CodexTransport(new CodexAuth({ ...process.env }), codex.url, "token_harness_test");
+  const t = new CodexTransport(new CodexAuth({ ...process.env }), codex.url, "mph_test");
   const body = { model: "gpt-5.6-sol", instructions: "x", input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }] };
 
   // streaming caller: the upstream Response is handed through, headers intact

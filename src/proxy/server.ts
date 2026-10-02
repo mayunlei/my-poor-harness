@@ -142,7 +142,7 @@ export class Proxy {
     let input: any[] = Array.isArray(body.input) ? body.input : [];
     let substituted = 0;
     if (this.opts.recallMode === "substitute") ({ input, substituted } = substituteRecalls(input, this.store));
-    const forceCompact = typeof body?.metadata?.th_compact === "string";
+    const forceCompact = typeof body?.metadata?.mph_compact === "string";
     const rw = rewrite(input, { knobs, store: this.store, state, now: t0, settingsHash: settingsHash(body), forceCompact });
     this.sessions.save(sid, state);
 
@@ -151,7 +151,7 @@ export class Proxy {
       const tools = Array.isArray(body.tools) ? body.tools : [];
       if (!tools.some((t: any) => t?.name === "recall")) upstreamBody.tools = [...tools, RECALL_TOOL];
     }
-    delete upstreamBody.metadata?.th_compact;
+    delete upstreamBody.metadata?.mph_compact;
 
     this.log(`session=${sid.slice(0, 12)} step=${step} ctx ${rw.stats.tokensBefore}→${rw.stats.tokensAfter} folded=${rw.stats.folded} shaped=${rw.stats.shaped} polls=${rw.stats.pollsCollapsed} dedupe=${rw.stats.readsDeduped} cache=${rw.stats.cacheState}${rw.stats.compacted ? " COMPACT(" + rw.stats.compactReason + ")" : ""}${substituted ? " recall=" + substituted : ""}`);
 

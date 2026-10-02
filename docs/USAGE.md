@@ -390,11 +390,4 @@ scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
 
 Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `proxy/sessions/`, `harness/sessions/`, `sidecar/`). Override with `MPH_HOME`.
 
-The project used to be called token-harness. If `~/.token_harness/` exists it is used instead
-of `~/.mph/`, because it holds the ledger history and the Codex OAuth tokens and silently
-starting an empty one would look like data loss. Nothing is migrated for you: `mv
-~/.token_harness ~/.mph` when you want the new name. The old `TH_*` environment variables and
-`TOKEN_HARNESS_HOME` are still read as fallbacks (`src/core/env.ts`), so existing shells and
-scripts keep working.
-
 Multi-agent Codex sessions: `agent_message` items (spawn_agent / send_message traffic, payload encrypted) are folded outside the window like tool outputs: a one-line stub with the message header; text payloads go to the artifact store and are recallable, encrypted payloads are dropped.

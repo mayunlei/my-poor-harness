@@ -10,8 +10,7 @@
  *   }
  *
  * Resolution order (highest first): explicit overrides (CLI flags) → environment
- * (MPH_PROVIDER, MPH_OPENAI_BASE_URL / OPENAI_BASE_URL, MPH_OPENAI_API_KEY / OPENAI_API_KEY;
- *  the pre-rename TH_* names still work, see src/core/env.ts)
+ * (MPH_PROVIDER, MPH_OPENAI_BASE_URL / OPENAI_BASE_URL, MPH_OPENAI_API_KEY / OPENAI_API_KEY)
  * → config.json → default (codex, i.e. the built-in ChatGPT OAuth reverse proxy).
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs";

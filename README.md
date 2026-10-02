@@ -121,56 +121,131 @@ the same tasks under every strategy and scores them with each task's own accepta
 command, never with the strategy's own claim. Strategies are a knob because the answer is
 task-dependent and should be measured, not argued about.
 
-## Quickstart
+## The commands
 
-### Run a release build (no toolchain needed)
+| command | what it does |
+|---|---|
+| `mph` | the agent loop: `chat`, `run`, `map`, `compare`, plus `login` / `config` / `knobs` / `sessions` |
+| `mph-proxy` | transparent `/v1/responses` proxy — keep your current client, send fewer tokens |
+| `mph-dash` | live dashboard: what you are saving, and what it is costing in credits |
+| `mph-sidecar` | report on the ledger, tune knobs, measure the real per-model price |
+
+## Install
+
+Either grab a release, or build from source. Node ≥ 20.11 either way.
 
 ```bash
-# grab the latest release
+# a) the standalone release: no toolchain, no npm install, no network
 gh release download --repo mayunlei/my-poor-harness --pattern '*standalone.tar.gz'
 tar xzf my-poor-harness-*-standalone.tar.gz && cd my-poor-harness-*/
+node bin/mph-dash.js --open
 
-node bin/mph-dash.js --open          # dashboard, straight away
-node bin/mph-proxy.js --port 8791    # proxy in front of your existing Codex client
-```
-
-The standalone tarball carries the compiled `dist/` and its one runtime dependency, so it runs
-on plain `node` ≥20.11 with no `npm install` and no network. Prefer npm?
-
-```bash
+# b) the npm tarball, if you want the commands on your PATH
 gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz' --exclude '*standalone*'
-npm install -g ./my-poor-harness-*.tgz     # puts mph, mph-proxy, mph-sidecar, mph-dash on PATH
+npm install -g ./my-poor-harness-*.tgz        # mph, mph-proxy, mph-dash, mph-sidecar
 ```
 
-Verify what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
+Check what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
 
-### From source
+## Build from source
 
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
-npm install
-npm test                      # 52 tests, no network, no API key
-npm run dash -- --open        # live dashboard
-npm run proxy                 # mph-proxy on :8791
-npm run bench:replay -- --limit 30 --min-bytes 200000   # offline savings on your own sessions
+npm install                   # one runtime dependency (js-tiktoken), the rest is dev-only
+npm test                      # 58 tests, mock model only: no network, no API key, no quota
+npm run build                 # TypeScript → dist/ ; the bin/ commands then run on plain node
 ```
 
-### See it working: the live dashboard
+That is the whole build. Nothing is generated or vendored, and `dist/` is the only output.
+
+| script | what it does |
+|---|---|
+| `npm run build` | compile to `dist/` |
+| `npm run typecheck` | compile with no output |
+| `npm test` | the full suite |
+| `npm run package` | typecheck + test + build + the two release tarballs into `release/` |
+| `npm run release` | package, tag, push, create the GitHub release (see below) |
+
+Without a build, the `bin/mph*` commands fall back to running the TypeScript through `tsx`; with
+`dist/` present they use it. So `node bin/mph.js …` works in a fresh clone, and gets faster once
+you have built. During development you can also skip `bin/` entirely:
 
 ```bash
-npm run dash -- --open --weekly-budget 50M    # or: mph-dash --open
+npm run proxy -- --port 8791        # = npx tsx src/proxy/cli.ts
+npm run dash -- --open
+npm run harness -- run "…"
+npm run sidecar -- report
 ```
 
-The layout, with the headline numbers off a short local run and the lower rows sketched in
-(`mph-dash --once` prints the same snapshot as JSON):
+## Usage
+
+### 1. Point it at a model
+
+By default both `mph` and `mph-proxy` talk to the ChatGPT Codex backend with your ChatGPT
+login — the same thing the Codex CLI does. No API key.
+
+```bash
+mph whoami        # which credentials would be used (an existing ~/.codex/auth.json is reused)
+mph login         # browser PKCE login, if you have none
+mph config        # show the effective upstream
+```
+
+Any OpenAI-compatible endpoint works instead, including ones that only speak Chat Completions
+(DashScope/Qwen, vLLM, Ollama, most gateways):
+
+```bash
+mph config provider=openai_compatible base_url=https://api.openai.com/v1 api_key=sk-...
+# or per shell, and wire_api=chat for a /chat/completions-only endpoint:
+MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=sk-... \
+  MPH_OPENAI_WIRE_API=chat mph run --model qwen3.7-plus "…"
+```
+
+### 2. Keep your current client (proxy mode)
+
+The lowest-effort win: nothing about your workflow changes except the token bill.
+
+```bash
+mph-proxy --port 8791 --verbose
+```
+
+Then point Codex at it in `~/.codex/config.toml`:
+
+```toml
+chatgpt_base_url = "http://127.0.0.1:8791"
+```
+
+Every request gets rewritten on the way out — big tool outputs folded to one-line stubs the
+model can expand with `recall(id)`, duplicate reads collapsed, poll chains merged — and a ledger
+row is written per response. `curl localhost:8791/health` and `/stats` if you want to look.
+
+### 3. Or use the harness's own loop
+
+Per-turn rebuild, blocking `run`/`wait` instead of polling, and sessions you can branch:
+
+```bash
+mph chat --cwd ~/myproject            # interactive; /fork /merge /discard /strategy /stats
+mph run --cwd . "fix the failing test in tests/test_x.py"
+mph map --task "analyse {item}" --items AAPL,MSFT,NVDA --parallel 3    # fresh context per item
+```
+
+In `chat`: `/fork <name>` branches for a side question, `/merge <branch>` brings the branch's
+state back as one block, `/strategy plan_verify` switches execution strategy, `/stats` shows the
+turn's tokens.
+
+### 4. Watch what it is doing
+
+```bash
+mph-dash --open
+```
+
+The layout, with example numbers (what your own run shows depends entirely on your sessions):
 
 ```
-   ┌ quota stretch ──┬ tokens not sent ─┬ cost-equiv saved ┬ sessions ──┐
-   │     ×3.99       │      395.6K      │      395.6K      │     13     │
-   │ same work, 75%  │ 543.6K wanted →  │ paid 132.5K of   │  1 active  │
-   │  less paid for  │   148.0K sent    │      528.1K      │    now     │
+   ┌ credits spent ──┬ quota stretch ───┬ tokens not sent ─┬ cache hit ─┐
+   │     3.750       │      ×3.99       │      395.6K      │     94%    │
+   │ 55,969 left ·   │ same work, 75%   │ 543.6K wanted →  │  2.0M/2.1M │
+   │  29.3 per 1M in │  less paid for   │   148.0K sent    │   cached   │
    └─────────────────┴──────────────────┴──────────────────┴────────────┘
-   weekly budget  ░░░░░░░░░░░░░░░░░░░░░░  128.8K / 50M  ·  unmodified client would be at 544.4K
 
    context per step        ╭─╮      ╭──╮        ── client would send
    ▁▂▃▄▅▆▇█ sawtooth ─────╯ ╰──────╯  ╰───      ── actually sent (flat, folded)
@@ -178,56 +253,86 @@ The layout, with the headline numbers off a short local run and the lower rows s
    sessions                            savings feed
    s_cde9705a  qwen3.7-plus  ×3.67     14:42:54  compact   t0·s12  −80.1K tok
    s_11f0a2e1  gpt-5.6-sol   ×8.21     14:42:51  dedupe    t0·s11  −9.4K tok
+
+   by strategy    runs  pass  calls  cost-equiv  credits  cr/pass
+   plan_verify       3   3/3     41     466,320     7.41     2.47
+   react             3   2/3     29     713,400    11.02     5.51
 ```
 
-It tails `~/.mph/ledger.jsonl` and pushes updates over SSE, so numbers move while the
-agent works. **Quota stretch** is the headline: what you would have paid divided by what you
-did pay — and when the upstream meters credits, the real spend and remaining balance sit
-beside it. Per session you get the context curve (what the client wanted to send vs what actually
-went out — the gap is the whole point), steps, cache share, folds and recalls; alongside it a
-feed of every fold with its token saving, and a breakdown of which mechanism earned what.
-It is strictly read-only, so it is safe to leave running next to the proxy, the harness and the
-sidecar. `--once` prints a JSON snapshot instead, for scripts and CI.
+Quota stretch is what you would have paid ÷ what you did pay. **Credits spent** is real money
+when the upstream meters it, with what is left and the rate per 1M input. Per session you get
+the two context curves — what the client wanted to send vs what went out, and the gap is the
+whole product — and per strategy the cost of *every* agent it ran, so overhead cannot hide.
+Read-only, so leave it running next to everything else. `--once` prints the same snapshot as
+JSON for scripts and CI.
 
-### Build a release package
+The credits meter is eventually consistent and the pool is shared across your devices, so the
+totals are sound and a single row is not. The page says so, in place.
+
+### 5. Report, tune, and measure the price
 
 ```bash
-npm run package
+mph-sidecar report                 # cost, credits, cache, compaction net effect, pass rates
+mph-sidecar tune --dry-run         # what it would change to the knobs, and why
+mph-sidecar watch --every 900      # report + tune on a loop
+mph-sidecar price                  # per-model price from the ledger — refuses when it cannot
+mph-sidecar price-probe            # measure it with a controlled burst (dry run unless --go)
+mph knobs                          # every knob and its current value
 ```
 
-Typechecks, runs the tests, compiles to `dist/`, then writes into `release/`:
+### 6. Try a different agent topology
+
+```bash
+mph strategies
+mph run --strategy plan_verify "…"                  # planner → cheap workers → independent verifier
+mph compare --tasks tasks.jsonl --strategies react,plan_verify --copy
+```
+
+`compare` scores each strategy with the task's own acceptance command — never with the
+strategy's own claim — in a private copy of the workspace. See
+[docs/USAGE.md](docs/USAGE.md#7-strategies-how-a-turn-is-organised).
+
+### 7. Measure the savings for free, on your own history
+
+```bash
+npm run bench:replay -- --limit 30 --min-bytes 200000
+```
+
+Replays your recorded Codex sessions through the rewriter with a simulated prefix cache and
+reports what would have been saved. Zero model calls, so it costs nothing.
+
+## Making a release
+
+```bash
+npm run package                  # → release/: npm tarball, standalone tarball, SHA256SUMS.txt
+npm run release -- --dry-run     # show the tag, artifacts and notes; change nothing
+npm run release -- 0.4.0         # bump, tag, push, create the release, upload the assets
+```
 
 | artifact | what it is |
 |---|---|
-| `my-poor-harness-<v>.tgz` | npm-installable package (`npm i -g`), deps from the registry |
-| `my-poor-harness-<v>-standalone.tar.gz` | `dist/` + `bin/` + runtime deps — runs offline on plain node |
+| `my-poor-harness-<v>.tgz` | npm-installable (`npm i -g`), dependency from the registry |
+| `my-poor-harness-<v>-standalone.tar.gz` | `dist/` + `bin/` + the runtime dependency — plain node, offline |
 | `SHA256SUMS.txt` | checksums for both |
 
-The staged standalone copy is smoke-tested with plain `node` before it is tarred, so a broken
-build fails the package step instead of the user.
-
-### Publish a release on GitHub
-
-```bash
-npm run release -- --dry-run     # build + show the tag, artifacts and notes; touches nothing
-npm run release -- 0.2.0         # bump to 0.2.0, tag, push, create the release, upload
-npm run release                  # release the version already in package.json
-```
-
-It refuses a dirty tree or an existing tag, generates notes from the commits since the previous
-tag, and uploads all three artifacts with `gh`. Pushing a `v*` tag is enough on its own:
-[`.github/workflows/release.yml`](.github/workflows/release.yml) builds the identical artifacts
-in CI, checks the tag matches `package.json`, and attaches them to the release.
+The staged standalone tree is smoke-tested with plain `node` before it is tarred, so a broken
+build fails packaging instead of failing you. `release.sh` refuses a dirty tree or an existing
+tag, and creates the release before uploading assets (the combined `gh release create` form
+404s). Pushing a `v*` tag is enough on its own:
+[`.github/workflows/release.yml`](.github/workflows/release.yml) rebuilds the same artifacts in
+CI, checks the tag matches `package.json`, and attaches them.
 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs typecheck, tests and build on Node
 20/22/24 for every push.
+
+Data lives in `~/.mph/` (ledger, artifacts, sessions, knobs, config, credentials). Override with
+`MPH_HOME`. All environment variables are `MPH_*`.
 
 ## The rest
 
 | | |
 |---|---|
-| [docs/USAGE.md](docs/USAGE.md) | login and config, the proxy, the harness loop, the sidecar, the replay bench, all the knobs |
-| [docs/DESIGN.md](docs/DESIGN.md) | the full design doc (Chinese): the session analysis, the token arithmetic, the layer-by-layer plan |
-| [docs/USAGE.md#7-strategies-how-a-turn-is-organised](docs/USAGE.md) | the planner / worker / verifier strategy, its knobs, and how to A/B it against ReAct |
+| [docs/USAGE.md](docs/USAGE.md) | every flag and knob: upstream config, the proxy, the harness loop, the dashboard, the sidecar, strategies and how to A/B them, price metering, the replay bench |
+| [docs/DESIGN.md](docs/DESIGN.md) | the design doc (Chinese): the session analysis, the token arithmetic, the layer-by-layer plan, the R6 regression results |
 
 Five layers, each usable on its own: `src/core` (the pure rewrite), `src/proxy` (transparent
 `/v1/responses` proxy — point Codex Desktop/CLI at it and nothing else changes), `src/harness`

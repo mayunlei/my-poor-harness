@@ -148,15 +148,15 @@ test("codex transport: headers, stream/store forced, instructions hoisted, SSE a
   const auth = await mockAuth(); const codex = await mockCodex({ reject401Once: true });
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(3600, "cur"), refreshToken: "rt-cur", accountId: ACC } }));
   const a = new CodexAuth({ ...process.env, MPH_CODEX_AUTH_BASE: auth.url });
-  const t = new CodexTransport(a, codex.url, "token_harness_test");
-  const body = { model: "gpt-5.6-sol", input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "be brief" }] }, { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }], stream: false, store: true, metadata: { th_compact: "1" }, prompt_cache_key: "sess-9" };
+  const t = new CodexTransport(a, codex.url, "mph_test");
+  const body = { model: "gpt-5.6-sol", input: [{ type: "message", role: "developer", content: [{ type: "input_text", text: "be brief" }] }, { type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }], stream: false, store: true, metadata: { mph_compact: "1" }, prompt_cache_key: "sess-9" };
   const r = await t.responses(body, { stream: false });
   assert.equal(r.status, 200);
   const j: any = await r.json();
   assert.equal(j.output[0].content[0].text, "hello from codex"); assert.equal(j.usage.input_tokens, 120);
   assert.equal(codex.requests.length, 2, "401 then retry");
   const h1 = codex.requests[0].headers, h2 = codex.requests[1].headers;
-  assert.ok(h1.authorization.startsWith("Bearer ")); assert.equal(h1["chatgpt-account-id"], ACC); assert.equal(h1["openai-beta"], "responses=experimental"); assert.equal(h1.originator, "token_harness_test"); assert.equal(h1.session_id, "sess-9");
+  assert.ok(h1.authorization.startsWith("Bearer ")); assert.equal(h1["chatgpt-account-id"], ACC); assert.equal(h1["openai-beta"], "responses=experimental"); assert.equal(h1.originator, "mph_test"); assert.equal(h1.session_id, "sess-9");
   assert.notEqual(h2.authorization, h1.authorization, "retried with the refreshed token");
   assert.equal(auth.calls.filter((c) => c.grant_type === "refresh_token").length, 1);
   const sent = codex.requests[1].body;

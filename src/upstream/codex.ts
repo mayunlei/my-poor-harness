@@ -36,7 +36,7 @@ export function codexHeaders(c: CodexCredentials, originator: string, sessionId?
     originator,
     accept: "text/event-stream",
     "content-type": "application/json",
-    "user-agent": `token_harness (${process.platform}; node ${process.versions.node})`,
+    "user-agent": `my-poor-harness (${process.platform}; node ${process.versions.node})`,
   };
   if (sessionId) h["session_id"] = sessionId;
   return h;
@@ -45,7 +45,7 @@ export function codexHeaders(c: CodexCredentials, originator: string, sessionId?
 /** make the body acceptable for the Codex backend without changing what the model sees */
 export function prepareCodexBody(body: any): any {
   const b: any = { ...body, stream: true, store: false };
-  delete b.metadata;              // backend rejects unknown metadata; th_compact already consumed by the proxy
+  delete b.metadata;              // backend rejects unknown metadata; mph_compact already consumed by the proxy
   delete b.user;
   delete b.service_tier;
   if (typeof b.instructions !== "string" || !b.instructions) {

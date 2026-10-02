@@ -170,7 +170,7 @@ export class CodexAuth {
     const state = randomBytes(16).toString("hex");
     const redirectUri = `http://localhost:${callbackPort}/auth/callback`;
     const url = new URL(`${this.authBase}/oauth/authorize`);
-    for (const [k, v] of Object.entries({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, scope: SCOPE, code_challenge: challenge, code_challenge_method: "S256", state, id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "token_harness" })) url.searchParams.set(k, v);
+    for (const [k, v] of Object.entries({ response_type: "code", client_id: CLIENT_ID, redirect_uri: redirectUri, scope: SCOPE, code_challenge: challenge, code_challenge_method: "S256", state, id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "my-poor-harness" })) url.searchParams.set(k, v);
 
     let resolveCode!: (c: string) => void, rejectCode!: (e: Error) => void;
     const codeP = new Promise<string>((res, rej) => { resolveCode = res; rejectCode = rej; });

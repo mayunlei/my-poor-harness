@@ -1,11 +1,8 @@
 /**
- * Environment variables, with the pre-rename names still honoured.
- *
- * The project was called token-harness and its variables were TH_*. Everything
- * is MPH_* now, but a shell, a script or a systemd unit set up under the old
- * name must keep working, so every lookup falls back. New code should only ever
- * use the MPH_ name.
+ * Environment variables. Every one is MPH_*; `mphEnv("OPENAI_BASE_URL")` reads
+ * MPH_OPENAI_BASE_URL. The indirection exists so the prefix is declared once
+ * rather than spelled out at thirty call sites.
  */
 export function mphEnv(name: string, e: NodeJS.ProcessEnv = process.env): string | undefined {
-  return e[`MPH_${name}`] ?? e[`TH_${name}`];
+  return e[`MPH_${name}`];
 }

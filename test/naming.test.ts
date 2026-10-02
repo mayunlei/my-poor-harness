@@ -1,51 +1,96 @@
 /**
- * The project was renamed from token-harness to my-poor-harness (mph). These pin
- * the compatibility promises, because breaking them silently loses a user's
- * ledger history or their Codex credentials.
+ * The project is my-poor-harness and the CLI is mph. One name, everywhere.
+ * These tests fail if the old name creeps back in, which is easy to do: it hid
+ * in a split HTML tag, in a wire-protocol string and in three duplicated
+ * home-directory defaults the first time round.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
-import { join } from "node:path";
+import { join, extname } from "node:path";
 import { mphEnv } from "../src/core/env.js";
 
-test("mphEnv: MPH_ wins, TH_ still works, neither means undefined", () => {
-  assert.equal(mphEnv("OPENAI_BASE_URL", { MPH_OPENAI_BASE_URL: "new", TH_OPENAI_BASE_URL: "old" }), "new");
-  assert.equal(mphEnv("OPENAI_BASE_URL", { TH_OPENAI_BASE_URL: "old" }), "old", "a shell set up before the rename keeps working");
+const ROOT = join(import.meta.dirname, "..");
+
+function sourceFiles(dirs: string[], exts = [".ts", ".js", ".sh", ".yml", ".md", ".py"]): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
+    for (const name of readdirSync(d)) {
+      if (name === "node_modules" || name === "dist" || name === "release" || name.startsWith(".")) continue;
+      const p = join(d, name);
+      if (statSync(p).isDirectory()) walk(p);
+      else if (exts.includes(extname(name))) out.push(p);
+    }
+  };
+  for (const d of dirs) walk(join(ROOT, d));
+  return out;
+}
+
+test("mphEnv reads MPH_ and nothing else", () => {
+  assert.equal(mphEnv("OPENAI_BASE_URL", { MPH_OPENAI_BASE_URL: "x" }), "x");
+  assert.equal(mphEnv("OPENAI_BASE_URL", { TH_OPENAI_BASE_URL: "old" }), undefined, "the pre-rename prefix is gone, not quietly honoured");
   assert.equal(mphEnv("OPENAI_BASE_URL", {}), undefined);
-  assert.equal(mphEnv("NOPE", { MPH_OTHER: "x" }), undefined);
 });
 
-test("harnessHome: MPH_HOME wins, then the legacy env var, then an existing legacy directory", async () => {
-  const saved = { MPH_HOME: process.env.MPH_HOME, TOKEN_HARNESS_HOME: process.env.TOKEN_HARNESS_HOME };
-  const fresh = async () => {
-    // knobs.ts reads process.env at call time, so a plain re-import is enough
-    const { harnessHome } = await import("../src/core/knobs.js?" + Math.random());
-    return harnessHome();
-  };
+test("harnessHome is MPH_HOME, else ~/.mph", async () => {
+  const saved = process.env.MPH_HOME;
+  const fresh = async () => (await import("../src/core/knobs.js?" + Math.random())).harnessHome();
   try {
-    const a = mkdtempSync(join(tmpdir(), "mph-home-"));
-    process.env.MPH_HOME = a; delete process.env.TOKEN_HARNESS_HOME;
-    assert.equal(await fresh(), a, "MPH_HOME is honoured");
-
-    const b = mkdtempSync(join(tmpdir(), "mph-legacy-env-"));
-    delete process.env.MPH_HOME; process.env.TOKEN_HARNESS_HOME = b;
-    assert.equal(await fresh(), b, "the pre-rename variable still points the harness at its data");
-
-    delete process.env.TOKEN_HARNESS_HOME;
-    const home = await fresh();
-    // whichever applies on this machine, it must be one of the two known locations
-    assert.ok(home === join(homedir(), ".token_harness") || home === join(homedir(), ".mph"), home);
+    const dir = mkdtempSync(join(tmpdir(), "mph-home-"));
+    process.env.MPH_HOME = dir;
+    assert.equal(await fresh(), dir);
+    delete process.env.MPH_HOME;
+    assert.equal(await fresh(), join(homedir(), ".mph"));
   } finally {
-    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    if (saved === undefined) delete process.env.MPH_HOME; else process.env.MPH_HOME = saved;
   }
 });
 
-test("no stale TH_/token-harness names leak into the shipped CLI help", async () => {
+test("one home directory: every module resolves artifacts and the ledger under the same root", async () => {
+  const saved = process.env.MPH_HOME;
+  const dir = mkdtempSync(join(tmpdir(), "mph-one-home-"));
+  process.env.MPH_HOME = dir;
+  try {
+    const { ArtifactStore } = await import("../src/core/artifacts.js?" + Math.random());
+    const { Ledger } = await import("../src/core/ledger.js?" + Math.random());
+    // the three defaults used to be written out separately; a divergence here would
+    // separate a session's artifacts from its ledger and break recall(id)
+    assert.ok(new ArtifactStore().root.startsWith(dir), new ArtifactStore().root);
+    assert.ok(new Ledger().path.startsWith(dir), new Ledger().path);
+  } finally {
+    if (saved === undefined) delete process.env.MPH_HOME; else process.env.MPH_HOME = saved;
+  }
+});
+
+test("no old name anywhere in the shipped source, scripts, bins or docs", () => {
+  const files = sourceFiles(["src", "bin", "scripts", "docs", "bench", ".github"]);
+  assert.ok(files.length > 30, `expected to scan the tree, found ${files.length} files`);
+  const offenders: string[] = [];
+  for (const f of files) {
+    const text = readFileSync(f, "utf8");
+    for (const [i, line] of text.split("\n").entries()) {
+      // \bTH_ does not match AUTH_BASE or JWT_AUTH_CLAIM, which are not ours
+      if (/token[-_]harness|TOKEN_HARNESS|\bTH_[A-Z]|\bth-(proxy|sidecar|dash)\b/i.test(line)) {
+        offenders.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${line.trim().slice(0, 90)}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], "old naming found:\n" + offenders.join("\n"));
+});
+
+test("the dashboard page names itself correctly, even split across markup", async () => {
   const { UI_HTML } = await import("../src/dashboard/ui.js");
-  assert.match(UI_HTML, /my-poor-harness|mph/, "the dashboard identifies itself by the new name");
-  // the h1 splits the name across tags, so a plain "token-harness" check misses it
-  assert.ok(!/token-harness/.test(UI_HTML), "no old product name on the page");
-  assert.ok(!/token-|token_harness/.test(UI_HTML), "not even split across markup");
+  assert.match(UI_HTML, /my-poor-<b>harness<\/b>|my-poor-harness/);
+  assert.ok(!/token-|token_/.test(UI_HTML), "the h1 once split the old name across tags, hiding it from a plain search");
+});
+
+test("package metadata and the bin names agree", () => {
+  const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
+  assert.equal(pkg.name, "my-poor-harness");
+  assert.deepEqual(Object.keys(pkg.bin).sort(), ["mph", "mph-dash", "mph-proxy", "mph-sidecar"]);
+  for (const target of Object.values(pkg.bin) as string[]) {
+    assert.match(target, /^bin\/mph(-\w+)?\.js$/);
+    assert.ok(readFileSync(join(ROOT, target), "utf8").includes("launch("), `${target} is a launcher`);
+  }
 });
