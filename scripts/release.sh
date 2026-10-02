@@ -5,6 +5,7 @@
 #   npm run release                 # release the version in package.json
 #   npm run release -- 0.2.0        # bump package.json to 0.2.0 first
 #   npm run release -- --dry-run    # build + show what would happen, touch nothing remote
+#   npm run release -- --notes-file NOTES.md    # hand-written release notes instead of the git log
 #
 # Needs the gh CLI, authenticated (`gh auth status`). Pushing the tag is also
 # enough on its own: .github/workflows/release.yml builds and uploads the same
@@ -15,13 +16,17 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 DRY=0
 BUMP=""
-for a in "$@"; do
-  case "$a" in
+NOTES_FILE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY=1 ;;
+    --notes-file) NOTES_FILE="$2"; shift ;;
     -h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) BUMP="$a" ;;
+    *) BUMP="$1" ;;
   esac
+  shift
 done
+[ -n "$NOTES_FILE" ] && [ ! -f "$NOTES_FILE" ] && { echo "no such notes file: $NOTES_FILE" >&2; exit 1; }
 
 if [ -n "$BUMP" ]; then
   echo "==> bumping version to $BUMP"
@@ -53,6 +58,9 @@ fi
 bash scripts/package.sh
 
 NOTES=$(mktemp)
+if [ -n "$NOTES_FILE" ]; then
+  cat "$NOTES_FILE" > "$NOTES"
+else
 {
   echo "## $NAME $TAG"
   echo
@@ -74,6 +82,7 @@ NOTES=$(mktemp)
   echo
   echo "Verify with \`shasum -a 256 -c SHA256SUMS.txt\`."
 } > "$NOTES"
+fi
 
 if [ "$DRY" = "1" ]; then
   echo
