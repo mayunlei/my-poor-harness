@@ -97,7 +97,7 @@ else
   echo "npm install -g $NAME-$VERSION.tgz        # needs the npm registry for js-tiktoken"
   echo "# or, no network, no npm install:"
   echo "tar xzf $NAME-$VERSION-standalone.tar.gz && cd $NAME-$VERSION"
-  echo "node bin/mph-dash.js --open               # live dashboard"
+  echo "node bin/mph.js dash --open               # live dashboard"
   echo '```'
   echo
   echo "Verify with \`shasum -a 256 -c SHA256SUMS.txt\`."

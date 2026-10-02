@@ -1,28 +1,18 @@
 /**
- * mph-dash — live dashboard over the ledger.
- *
- *   mph-dash                       # serve on 127.0.0.1:8792
- *   mph-dash --port 9000 --open    # pick a port, open the browser
- *   mph-dash --weekly-budget 50M   # draw the weekly quota gauge
- *   mph-dash --once                # print one JSON snapshot and exit (for scripts/CI)
+ * `mph dash` — live dashboard over the ledger. One of the subcommands of the single
+ * `mph` CLI; this module only exports, so importing it starts no server.
  */
 import { spawn } from "node:child_process";
 import { mphEnv } from "../core/env.js";
-import { startDashboard } from "./server.js";
+import { snapshotOnce, startDashboard } from "./server.js";
 import { defaultLedgerPath } from "./live.js";
 
-const args = process.argv.slice(2);
-const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
-const has = (n: string) => args.includes(n);
-
-if (has("--help") || has("-h")) {
-  console.log(`mph-dash [--port 8792] [--host 127.0.0.1] [--ledger PATH] [--weekly-budget N|50M] [--poll-ms 1000] [--open] [--once] [--quiet]
+export const DASH_HELP = `mph dash [--port 8792] [--host 127.0.0.1] [--ledger PATH] [--weekly-budget N|50M] [--poll-ms 1000] [--open] [--once] [--quiet]
 
 Live view of what the harness is saving: quota stretch, tokens not sent, cache
 hit rate, per-session context curves and a feed of every fold as it happens.
-Read-only; safe to run next to the proxy, the harness and the sidecar.`);
-  process.exit(0);
-}
+Read-only; safe to run next to the proxy, a chat session and \`mph watch\`.
+\`--once\` prints one JSON snapshot and exits, for scripts and CI.`;
 
 /** Accepts 50000000, 50M, 1.5B. */
 function budget(v?: string): number {
@@ -33,34 +23,40 @@ function budget(v?: string): number {
   return Math.round(Number(m[1]) * mult);
 }
 
-const dash = await startDashboard({
-  port: Number(opt("--port", "8792")),
-  host: opt("--host", "127.0.0.1"),
-  ledger: opt("--ledger"),
-  pollMs: Number(opt("--poll-ms", "1000")),
-  weeklyBudget: budget(opt("--weekly-budget")),
-  verbose: !has("--quiet"),
-});
+export async function dashMain(args: string[]): Promise<void> {
+  const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
+  const has = (n: string) => args.includes(n);
+  if (has("--help") || has("-h")) { console.log(DASH_HELP); return; }
 
-if (has("--once")) {
-  console.log(JSON.stringify(dash.snapshot(), null, 2));
-  await dash.close();
-  process.exit(0);
-}
+  // --once reads the ledger and leaves; it must not need a free port
+  if (has("--once")) {
+    console.log(JSON.stringify(snapshotOnce({ ledger: opt("--ledger"), weeklyBudget: budget(opt("--weekly-budget")) }), null, 2));
+    return;
+  }
 
-if (!has("--quiet")) {
-  const s = dash.snapshot();
-  console.log(`my-poor-harness dashboard  ${dash.url}`);
-  console.log(`ledger: ${opt("--ledger") ?? defaultLedgerPath()}  (${s.rows} rows, ${s.totals.sessions} sessions)`);
-  console.log(`quota stretch so far: x${s.totals.multiplier.toFixed(2)}  ·  ${Math.round(s.totals.savedTokens).toLocaleString("en-US")} tokens not sent`);
-  console.log(`Ctrl-C to stop.`);
-}
+  const dash = await startDashboard({
+    port: Number(opt("--port", "8792")),
+    host: opt("--host", "127.0.0.1"),
+    ledger: opt("--ledger"),
+    pollMs: Number(opt("--poll-ms", "1000")),
+    weeklyBudget: budget(opt("--weekly-budget")),
+    verbose: !has("--quiet"),
+  });
 
-if (has("--open")) {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  spawn(cmd, [dash.url], { stdio: "ignore", detached: true, shell: process.platform === "win32" }).unref();
-}
+  if (!has("--quiet")) {
+    const s = dash.snapshot();
+    console.log(`my-poor-harness dashboard  ${dash.url}`);
+    console.log(`ledger: ${opt("--ledger") ?? defaultLedgerPath()}  (${s.rows} rows, ${s.totals.sessions} sessions)`);
+    console.log(`quota stretch so far: x${s.totals.multiplier.toFixed(2)}  ·  ${Math.round(s.totals.savedTokens).toLocaleString("en-US")} tokens not sent`);
+    console.log(`Ctrl-C to stop.`);
+  }
 
-for (const sig of ["SIGINT", "SIGTERM"] as const) {
-  process.on(sig, () => { void dash.close().then(() => process.exit(0)); });
+  if (has("--open")) {
+    const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
+    spawn(cmd, [dash.url], { stdio: "ignore", detached: true, shell: process.platform === "win32" }).unref();
+  }
+
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => { void dash.close().then(() => process.exit(0)); });
+  }
 }

@@ -3,15 +3,17 @@
 A token-saving harness for coding agents, built from the analysis of 2,128 local Codex sessions
 (see [DESIGN.md](DESIGN.md)). Each layer is usable on its own:
 
+There is one command, `mph`; every layer below is one of its subcommands (`mph help` lists them).
+
 | layer | what it does | entry |
 |---|---|---|
 | **ctx-core** | pure, idempotent rewrite of a Responses API `input` array: output shaping that keeps failure fields, stubs for folded outputs (`recall(id)` to expand), poll-chain collapse, read dedupe, fixed-prefix diet, batch folding with hysteresis, cache-aware compaction judge | `src/core` |
-| **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `mph-proxy` |
+| **ctx-proxy** | transparent `/v1/responses` proxy: rewrites every request with ctx-core, injects a `recall` tool, streams SSE through, logs a ledger row per response. Works with Codex Desktop / CLI pointed at it | `mph proxy` |
 | **harness** | own agent loop for long conversations: an append-only transcript that keeps every user word, a turn gate (carry the last turn's work or rebuild), global long-term **memory** with recall, **skills** (SKILL.md) and CLI tools, blocking `run`/`wait` instead of polling, `delegate` to cheaper models, session **fork / merge / discard** | `mph` |
-| **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `mph-sidecar` |
-| **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `mph-sidecar price`, `price-probe` |
+| **sidecar** | reads the ledger, reports cost / compaction net effect / cache behaviour / delegate pass rates, tunes knobs within bounds (hill-climb + Thompson sampling), refits the cache TTL and the step predictor; every change has provenance and a quality guard | `mph report`, `mph tune` |
+| **metering** | the quota/billing headers Codex puts on every response, an aggregate price estimator that refuses to guess, and a controlled probe that measures what a model actually costs | `mph price`, `mph price-probe` |
 | **strategies** | how a turn is organised: `react` (one agent, growing context) or `plan_verify` (strong planner writes acceptance commands, cheap workers in fresh contexts, independent verifier argues until the evidence holds); `mph compare` scores them on an external oracle | `mph run --strategy`, `mph compare` |
-| **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `mph-dash` |
+| **dashboard** | live view over the ledger: quota stretch, tokens never sent, per-session context curves, a feed of every fold as it happens. Read-only, SSE, no dependencies | `mph dash` |
 | **upstream** | where requests go: the built-in **Codex reverse proxy** (ChatGPT OAuth login, token refresh, `chatgpt.com/backend-api/codex/responses`) or any OpenAI-compatible `/responses` endpoint with your own URL + key | `mph login`, `mph config` |
 
 ## Install
@@ -19,12 +21,12 @@ A token-saving harness for coding agents, built from the analysis of 2,128 local
 ```bash
 git clone https://github.com/mayunlei/my-poor-harness && cd my-poor-harness
 npm install
-npm test                                  # 69 tests: core, harness loop, multi-turn (transcript, memory, gate, skills), strategies, proxy, upstream, meter, price, sidecar, dashboard
+npm test                                  # 75 tests: core, harness loop, multi-turn (transcript, memory, gate, skills), strategies, the single CLI, proxy, upstream, meter, price, sidecar, dashboard
 ```
 
 ## 0. Upstream: login and config
 
-By default both `mph` and `mph-proxy` talk to the ChatGPT Codex backend directly with your ChatGPT login (the same thing the Codex CLI does). No codex_api bridge, no API key.
+By default both `mph chat` and `mph proxy` talk to the ChatGPT Codex backend directly with your ChatGPT login (the same thing the Codex CLI does). No codex_api bridge, no API key.
 
 ```bash
 npx tsx src/harness/cli.ts whoami     # which credentials would be used (an existing ~/.codex/auth.json is reused as-is)
@@ -44,7 +46,7 @@ npx tsx src/harness/cli.ts config provider=openai_compatible base_url=https://ap
 
 Resolution: CLI flags → env → `config.json` → default `codex`.
 
-Endpoints that only speak **Chat Completions** (DashScope / Qwen, vLLM, Ollama, most gateways) work too: set `wire_api=chat` (or `MPH_OPENAI_WIRE_API=chat`, or `mph-proxy --wire-api chat`). The upstream translates each Responses request to `/chat/completions` (tool calls, tool outputs, custom tools, folded stubs) and the reply back to Responses items, streaming included, so the harness and mph-proxy are unchanged. Without an explicit setting, a 404 on `/responses` switches that upstream to chat automatically. Encrypted reasoning cannot be sent back over chat and is dropped.
+Endpoints that only speak **Chat Completions** (DashScope / Qwen, vLLM, Ollama, most gateways) work too: set `wire_api=chat` (or `MPH_OPENAI_WIRE_API=chat`, or `mph proxy --wire-api chat`). The upstream translates each Responses request to `/chat/completions` (tool calls, tool outputs, custom tools, folded stubs) and the reply back to Responses items, streaming included, so the harness and the proxy are unchanged. Without an explicit setting, a 404 on `/responses` switches that upstream to chat automatically. Encrypted reasoning cannot be sent back over chat and is dropped.
 
 ```bash
 MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=sk-... MPH_OPENAI_WIRE_API=chat \
@@ -54,7 +56,7 @@ MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=
 ## 1. Proxy in front of Codex
 
 ```
-Codex Desktop / CLI  →  mph-proxy :8791  →  chatgpt.com/backend-api/codex/responses (your ChatGPT login)
+Codex Desktop / CLI  →  mph proxy :8791  →  chatgpt.com/backend-api/codex/responses (your ChatGPT login)
                                         └→  or any OpenAI-compatible /responses endpoint (--upstream / config.json)
 ```
 
@@ -69,7 +71,7 @@ Point Codex at it. Two options in `~/.codex/config.toml`:
 
 ```toml
 # A) ChatGPT-login Codex (Desktop / CLI): Codex posts to {chatgpt_base_url}/codex/responses with its own
-#    OAuth token; mph-proxy accepts any */responses path and forwards to codex_api's /v1/responses.
+#    OAuth token; mph proxy accepts any */responses path and forwards to codex_api's /v1/responses.
 chatgpt_base_url = "http://127.0.0.1:8791"
 
 # B) API-key style provider (uses the codex_api OAuth bridge behind the proxy)
@@ -223,7 +225,7 @@ What it shows
   `delegate` / `fork` / `merge` / `knob_change` event with the tokens it removed.
 - **where the savings came from** — the same events as a ranked breakdown.
 
-It only ever reads the ledger: run it next to the proxy, the harness and `mph-sidecar watch`
+It only ever reads the ledger: run it next to the proxy, a chat session and `mph watch`
 without interference. The tailer reads just the appended bytes, holds back half-written lines,
 and re-reads from the start if the ledger is truncated or rotated.
 
@@ -343,7 +345,7 @@ wall time. It also flags the dangerous case explicitly: a run that **claimed ver
 failed the oracle** — the verifier was fooled, which is worse than a plain failure.
 
 Results are written to `~/.mph/compare-<ts>.json`, and every model call carries
-`extra.strategy` in the ledger, so `mph-sidecar report` and the dashboard break down by
+`extra.strategy` in the ledger, so `mph report` and the dashboard break down by
 strategy too.
 
 ## 8. Measuring the real price
@@ -355,7 +357,7 @@ default and nothing here would know. So: measure it.
 
 ### What the backend actually tells you
 
-Every Codex response carries these headers, and `mph-proxy` now records them per ledger row
+Every Codex response carries these headers, and `mph proxy` now records them per ledger row
 (`credits_balance`, `credits_spent`, `primary_used_percent`, `secondary_used_percent`,
 `plan_type`, `active_limit`, `effort`):
 
@@ -426,15 +428,15 @@ prices is worse than no router.
 
 ```
 src/core      items, tokens, artifacts, shapers, knobs, ledger, cache_state, judge, summary, rewrite
-src/proxy     server (Responses proxy + recall), cli
-src/harness   providers (OpenAI Responses / Anthropic), tools + tools_extra, session (DAG, fork/merge), router, gate, assemble, loop, cli
+src/proxy     server (Responses proxy + recall), cli (`mph proxy`)
+src/harness   providers (OpenAI Responses / Anthropic), tools + tools_extra, session (DAG, fork/merge), router, gate, assemble, loop, cli (the one entry point)
 src/transcript  append-only transcript, paste detection, epoch rendering, answer cards, user-words fidelity check
 src/memory    store (node:sqlite + FTS5), recall (candidates, L0/L1/L2), write (rules, extraction, dedupe)
 src/skills    discovery, frontmatter, index, project instructions
 src/harness/strategies  react (baseline), plan_verify (planner / worker / independent verifier)
 src/harness/compare.ts  strategy A/B scored by each task's own acceptance command
-src/sidecar   metrics, tuner, price (aggregate estimator with refusals), cli
-src/dashboard live (ledger fold + tailer), ui (the page), server (SSE), cli
+src/sidecar   metrics, tuner, price (aggregate estimator with refusals), commands (names only), cli
+src/dashboard live (ledger fold + tailer), ui (the page), server (SSE + a portless snapshot), cli (`mph dash`)
 src/upstream  meter (quota/billing headers), price_probe (the controlled experiment), config (provider resolution), codex_auth (OAuth PKCE login, refresh, credential files), codex (transport), chat (Responses ⇄ Chat Completions adapter), sse (collector), login_cli
 bench/multiturn/       multi-turn golden set: cases.json + run.ts (arms full / hybrid / hybrid-nomem)
 bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: arms off / on / tight, same model, judged with hidden tests

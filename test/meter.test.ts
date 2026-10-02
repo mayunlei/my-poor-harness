@@ -141,7 +141,7 @@ test("meterHeaders / codex transport: the meter survives SSE aggregation into a 
   await codex.close();
 });
 
-test("mph-proxy writes the meter onto the ledger row, and credits_spent is the drop since the previous response", async () => {
+test("mph proxy writes the meter onto the ledger row, and credits_spent is the drop since the previous response", async () => {
   let balance = 1000;
   const codex = await listen((req, res) => {
     balance -= 1.5;

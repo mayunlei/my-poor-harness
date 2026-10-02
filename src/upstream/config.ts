@@ -1,5 +1,5 @@
 /**
- * Upstream configuration: where the harness and mph-proxy send Responses requests.
+ * Upstream configuration: where the harness and `mph proxy` send Responses requests.
  *
  *   ~/.mph/config.json
  *   {
@@ -137,4 +137,56 @@ export function memorySettings(env: NodeJS.ProcessEnv = process.env): MemorySett
   const m = loadConfigFile().memory ?? {};
   const flag = (v: string | undefined, d: boolean) => v === undefined ? d : !["0", "false", "off", "no"].includes(v.toLowerCase());
   return { recall: flag(mphEnv("MEMORY_RECALL", env), m.recall !== false), write: flag(mphEnv("MEMORY_WRITE", env), m.write !== false) };
+}
+
+/** every key `mph config k=v` and the vibe agent's settings_write accept, with what they take */
+export const CONFIG_KEYS: Record<string, string> = {
+  provider: "codex | openai_compatible",
+  base_url: "URL of an OpenAI-compatible endpoint (empty clears it)",
+  api_key: "key for that endpoint (empty clears it); never printed back",
+  wire_api: "responses | chat (empty = auto: responses, falling back to chat on 404)",
+  codex_base_url: "override the Codex backend base URL",
+  codex_models: "comma-separated models the Codex backend accepts",
+  main_model: "model for the conversation (empty = provider default)",
+  mid_model: "model for delegate workers and map items (empty = auto)",
+  small_model: "model for the gate, memory extraction and answer cards (empty = auto)",
+  memory_recall: "on | off — inject and search long-term memory",
+  memory_write: "on | off — record new memory entries",
+};
+
+const BOOL_ON = ["on", "true", "1", "yes"];
+const BOOL_OFF = ["off", "false", "0", "no"];
+
+/** mask anything that must not be echoed back into a transcript or a log */
+export function maskConfig(cfg: UpstreamConfigFile): UpstreamConfigFile {
+  return { ...cfg, api_key: cfg.api_key ? "***" : undefined };
+}
+
+/**
+ * Apply `key=value` settings to config.json. One validator for both `mph config` and
+ * the vibe agent, so the two can never disagree about what is allowed. Throws on an
+ * unknown key or an invalid value instead of silently falling back to a default.
+ */
+export function setConfigValues(entries: [string, string][]): { changed: Record<string, string>; config: UpstreamConfigFile } {
+  const cfg = loadConfigFile();
+  const changed: Record<string, string> = {};
+  const note = (k: string, v: string) => { changed[k] = k === "api_key" ? (v ? "***" : "(cleared)") : v || "(cleared)"; };
+  for (const [k, v] of entries) {
+    if (k === "provider") { if (v !== "codex" && v !== "openai_compatible") throw new Error("provider must be codex or openai_compatible"); cfg.provider = v; }
+    else if (k === "base_url") cfg.base_url = v || undefined;
+    else if (k === "api_key") cfg.api_key = v || undefined;
+    else if (k === "wire_api") { if (v && v !== "responses" && v !== "chat") throw new Error("wire_api must be responses or chat"); cfg.wire_api = (v || undefined) as WireApi | undefined; }
+    else if (k === "codex_base_url") cfg.codex = { ...(cfg.codex ?? {}), base_url: v || undefined };
+    else if (k === "codex_models") cfg.codex = { ...(cfg.codex ?? {}), models: v.split(",").map((m) => m.trim()).filter(Boolean) };
+    else if (k === "main_model" || k === "mid_model" || k === "small_model") cfg[k] = v || undefined;
+    else if (k === "memory_recall" || k === "memory_write") {
+      const on = BOOL_ON.includes(v.toLowerCase());
+      if (!on && !BOOL_OFF.includes(v.toLowerCase())) throw new Error(`${k} must be on or off`);
+      cfg.memory = { ...(cfg.memory ?? {}), [k === "memory_recall" ? "recall" : "write"]: on };
+    }
+    else throw new Error(`unknown config key ${k}; valid keys: ${Object.keys(CONFIG_KEYS).join(", ")}`);
+    note(k, v);
+  }
+  if (entries.length) saveConfigFile(cfg);
+  return { changed, config: cfg };
 }

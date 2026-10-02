@@ -1,4 +1,4 @@
-/** Interactive `login` shared by `mph` and `mph-proxy`: browser PKCE flow with manual paste fallback. */
+/** Interactive `mph login`: browser PKCE flow with manual paste fallback. */
 import { execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { CodexAuth, loadCredentials, planFromToken, authFilePath, clearCredentials } from "./codex_auth.js";

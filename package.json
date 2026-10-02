@@ -9,10 +9,7 @@
     "node": ">=24"
   },
   "bin": {
-    "mph": "bin/mph.js",
-    "mph-proxy": "bin/mph-proxy.js",
-    "mph-sidecar": "bin/mph-sidecar.js",
-    "mph-dash": "bin/mph-dash.js"
+    "mph": "bin/mph.js"
   },
   "files": [
     "bin",

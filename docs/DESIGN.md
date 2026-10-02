@@ -584,4 +584,4 @@ saving = 1 − Σ rewritten_c_i / Σ measured_c_i
 - 回归中修掉的框架问题：判分前按官方 SWE-bench 做法把测试补丁涉及的文件还原到基线；以 base commit 为基准判分（qwen 会自己 `git commit`，3 个任务因此重跑）；题目提示里的工作区路径改成每组自己的副本；后台任务日志从用户仓库移到 `~/.my-poor-harness/jobs`；启动器改为用绝对路径加载 tsx。
 - 产物：`~/.my-poor-harness/regress/r6_qwen37_20261001/`（`results.jsonl`、`summary.md`、每题 `runs/<arm>/<id>/` 里的 agent 日志、final.diff、eval_result.json）。
 
-**真实验证（2026-10-01 晚，内置 Codex 反代，模型 gpt-5.6-sol）**：`mph whoami` 复用 `~/.codex/auth.json`；mph-proxy 非流式请求返回 "pong"（in 137 / out 5 入账本），流式请求事件完整并把 `x-codex-plan-type` 等头透传；`mph run` 4 步完成"建 hello.txt、cat 验证、state_update、回复 done"。验证期间遇到一次上游 `server_is_overloaded`（response.failed 被原样透传），据此加了退避重试。`~/Program/codex_api` 不再是前置条件，`--upstream` 仍可指向它。
+**真实验证（2026-10-01 晚，内置 Codex 反代，模型 gpt-5.6-sol）**：`mph whoami` 复用 `~/.codex/auth.json`；mph proxy 非流式请求返回 "pong"（in 137 / out 5 入账本），流式请求事件完整并把 `x-codex-plan-type` 等头透传；`mph run` 4 步完成"建 hello.txt、cat 验证、state_update、回复 done"。验证期间遇到一次上游 `server_is_overloaded`（response.failed 被原样透传），据此加了退避重试。`~/Program/codex_api` 不再是前置条件，`--upstream` 仍可指向它。

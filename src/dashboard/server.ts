@@ -31,6 +31,19 @@ export interface DashboardHandle {
   close(): Promise<void>;
 }
 
+/**
+ * One snapshot of the ledger, with no server and no port. `mph dash --once` is for
+ * scripts and CI, and used to bind 8792 just to read a file -- which failed outright
+ * when a dashboard was already running on this machine.
+ */
+export function snapshotOnce(opts: Pick<DashboardOptions, "ledger" | "weeklyBudget"> = {}): LiveSnapshot {
+  const ledgerPath = opts.ledger ?? defaultLedgerPath();
+  const state = new LiveState(ledgerPath);
+  state.weeklyBudget = opts.weeklyBudget ?? 0;
+  for (const row of new LedgerTail(ledgerPath).read()) state.ingest(row);
+  return state.snapshot();
+}
+
 export async function startDashboard(opts: DashboardOptions = {}): Promise<DashboardHandle> {
   const ledgerPath = opts.ledger ?? defaultLedgerPath();
   const throttleMs = opts.throttleMs ?? 400;

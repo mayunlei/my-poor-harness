@@ -1,7 +1,7 @@
 /**
  * Built-in Codex (ChatGPT OAuth) upstream: config resolution, credential loading /
  * refresh / persistence, PKCE login against a mock auth server, the transport's
- * headers and SSE aggregation, and mph-proxy + harness client going through it.
+ * headers and SSE aggregation, and `mph proxy` + harness client going through it.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -173,7 +173,7 @@ test("codex transport: headers, stream/store forced, instructions hoisted, SSE a
   await auth.close(); await codex.close();
 });
 
-test("mph-proxy and the harness client go through the built-in codex upstream", async () => {
+test("mph proxy and the harness client go through the built-in codex upstream", async () => {
   const codex = await mockCodex();
   writeFileSync(authFilePath(), JSON.stringify({ credentials: { accessToken: token(3600, "cur"), refreshToken: "rt-cur", accountId: ACC } }));
   process.env.MPH_CODEX_BASE_URL = codex.url;

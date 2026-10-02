@@ -11,18 +11,54 @@ import { Ledger } from "../core/ledger.js";
 import { Router } from "./router.js";
 import { initTokenizer } from "../core/tokens.js";
 import { runLogin, printWhoami, runLogout } from "../upstream/login_cli.js";
-import { loadConfigFile, saveConfigFile, configPath, resolveUpstream, describeUpstream, type Provider } from "../upstream/index.js";
-import { resolveModels, memorySettings } from "../upstream/config.js";
+import { loadConfigFile, configPath, resolveUpstream, describeUpstream } from "../upstream/index.js";
+import { resolveModels, memorySettings, setConfigValues, maskConfig } from "../upstream/config.js";
 import { MemoryStore, MEMORY_TYPES, type MemoryType } from "../memory/store.js";
 import { detailBlock, l1Line } from "../memory/recall.js";
 import { discoverSkills, loadSkillBody, skillLine } from "../skills/index.js";
 import { projectOf } from "../memory/store.js";
 import type { GateAction } from "./gate.js";
+import { LEDGER_COMMANDS } from "../sidecar/commands.js";
+
+const HELP = `mph — one command for the whole harness. State lives in ~/.mph (override with MPH_HOME).
+\`mph <command> --help\` has the flags for the bigger ones.
+
+conversation
+  chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]    interactive session with fork/merge
+  run "task" | run - | run --prompt-file f     one turn; [--session id | --resume-last] [--cwd dir] [--max-steps n]
+                                               [--continue|--new] [--strategy s] [--json]
+                                               exit 0 done · 2 step limit · 3 model error · 4 user words lost
+  map --task "..." (--items a,b,c | --items-file f) [--parallel 3]         map-reduce, fresh context per item
+  compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]
+  strategies | sessions | fork <id> <name> | merge <branch> <main> | discard <id>
+
+serving
+  proxy [--port 8791] [--provider ...] [--verbose]      transparent /v1/responses proxy: keep your current client
+  dash [--open] [--once] [--port 8792]                  live dashboard over the ledger (read-only)
+
+the ledger
+  report [--since ISO] [--json]                cost, credits, cache, compaction net effect, pass rates
+  tune [--scope ...] [--dry-run] | watch [--every 900] | history
+  price [--json] | price-probe [--models a,b] [--go]    what a model really costs
+
+settings
+  knobs [--project p] [k=v ...]                every threshold, and its history in \`mph history\`
+  memory list|search|get|pin|unpin|forget|export|import|gc
+  skill list | show <name>
+  login | logout | whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
+  config [k=v ...]                             provider, base_url, api_key, wire_api, *_model, memory_*`;
 
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "chat";
 const opt = (n: string, d?: string) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : d; };
 const flag = (n: string) => args.includes(n);
+
+/** the words of a command, with flag values (`--cwd X`) left out */
+function positionalAfter(flags: string[]): string[] {
+  const skip = new Set<number>();
+  for (const f of flags) { const i = args.indexOf(f); if (i >= 0) { skip.add(i); skip.add(i + 1); } }
+  return args.slice(1).filter((a, i) => !skip.has(i + 1) && !a.startsWith("--"));
+}
 
 function printEvent(e: { kind: string; detail: string }) {
   const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!", gate: "◇", skill: "✦", memory_miss: "?" }[e.kind] ?? "•";
@@ -81,50 +117,31 @@ async function chat(session: SessionData) {
 }
 
 async function main() {
-  await initTokenizer();
   const cwd = resolve(opt("--cwd", process.cwd())!);
-  if (cmd === "help" || flag("--help")) {
-    console.log(`mph chat [--session id] [--cwd dir] [--title t] [--model m] [--profile p]   interactive session with fork/merge
-mph run "task" | mph run - | mph run --prompt-file f   one turn; [--session id | --resume-last] [--cwd dir] [--max-steps n] [--continue|--new] [--json]
-                                                       exit codes: 0 done · 2 step limit · 3 model error · 4 user-words fidelity violated
-mph memory list [--all] [--type t] | search <q> | get <id> | pin <id> | unpin <id> | forget <id> | export [file] | import <file> | gc
-mph skill list | show <name>
-mph map --task "..." (--items a,b,c | --items-file f) [--parallel 3]   map-reduce: fresh context per item
-mph compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]   same tasks, every strategy, scored by the task's own acceptance command
-mph strategies                                         list execution strategies
-mph sessions | mph fork <id> <name> | mph merge <branch> <main> | mph discard <id>
-mph knobs [--project p] [k=v ...]
-mph login | mph logout | mph whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
-mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire_api=responses|chat] [codex_models=a,b]
-           [main_model=...] [mid_model=...] [small_model=...] [memory_recall=on|off] [memory_write=on|off]   show / set ~/.mph/config.json`); return;
-  }
+  if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(HELP); return; }
+
+  // The proxy, the dashboard and the ledger commands used to be their own binaries.
+  // They are imported on demand so `mph chat` does not pay for a dashboard it is not
+  // starting, and so that nothing runs just by being imported.
+  if (cmd === "proxy") { (await import("../proxy/cli.js")).proxyMain(args.slice(1)); return; }
+  if (cmd === "dash" || cmd === "dashboard") { await (await import("../dashboard/cli.js")).dashMain(args.slice(1)); return; }
+  if ((LEDGER_COMMANDS as readonly string[]).includes(cmd)) { await (await import("../sidecar/cli.js")).ledgerMain(cmd as any, args.slice(1)); return; }
+
+  // the commands above answer their own --help; for the rest there is one help
+  if (flag("--help") || flag("-h")) { console.log(HELP); return; }
+
+  await initTokenizer();
   if (cmd === "login") { await runLogin(); return; }
   if (cmd === "logout") { runLogout(); return; }
   if (cmd === "whoami") { printWhoami(); return; }
   if (cmd === "config") {
     const kv = args.slice(1).filter((a) => a.includes("="));
     if (kv.length) {
-      const cfg = loadConfigFile();
-      for (const x of kv) {
-        const [k, ...rest] = x.split("="); const v = rest.join("=");
-        if (k === "provider") { if (v !== "codex" && v !== "openai_compatible") throw new Error("provider must be codex or openai_compatible"); cfg.provider = v as Provider; }
-        else if (k === "base_url") cfg.base_url = v || undefined;
-        else if (k === "api_key") cfg.api_key = v || undefined;
-        else if (k === "wire_api") { if (v && v !== "responses" && v !== "chat") throw new Error("wire_api must be responses or chat"); cfg.wire_api = (v || undefined) as any; }
-        else if (k === "codex_base_url") cfg.codex = { ...(cfg.codex ?? {}), base_url: v || undefined };
-        else if (k === "codex_models") cfg.codex = { ...(cfg.codex ?? {}), models: v.split(",").map((m) => m.trim()).filter(Boolean) };
-        else if (k === "main_model" || k === "mid_model" || k === "small_model") (cfg as any)[k] = v || undefined;
-        else if (k === "memory_recall" || k === "memory_write") {
-          const on = ["on", "true", "1", "yes"].includes(v.toLowerCase()); const off = ["off", "false", "0", "no"].includes(v.toLowerCase());
-          if (!on && !off) throw new Error(`${k} must be on or off`);
-          cfg.memory = { ...(cfg.memory ?? {}), [k === "memory_recall" ? "recall" : "write"]: on };
-        }
-        else throw new Error(`unknown config key ${k} (provider, base_url, api_key, wire_api, codex_base_url, codex_models, main_model, mid_model, small_model, memory_recall, memory_write)`);
-      }
-      saveConfigFile(cfg); console.log(`saved ${configPath()}`);
+      const { changed } = setConfigValues(kv.map((x) => { const [k, ...rest] = x.split("="); return [k, rest.join("=")] as [string, string]; }));
+      console.log(`saved ${configPath()}: ${Object.entries(changed).map(([k, v]) => `${k} = ${v}`).join(", ")}`);
     }
     const cfg = loadConfigFile();
-    console.log(JSON.stringify({ ...cfg, api_key: cfg.api_key ? "***" : undefined }, null, 2));
+    console.log(JSON.stringify(maskConfig(cfg), null, 2));
     console.log(`effective upstream: ${describeUpstream(resolveUpstream())}`);
     const m = resolveModels(knobsFor({ project: cwd }));
     console.log(`models: main ${m.main} (${m.source.main}) · mid ${m.mid} (${m.source.mid}) · small ${m.small} (${m.source.small})`);
@@ -173,9 +190,7 @@ mph config [provider=codex|openai_compatible] [base_url=...] [api_key=...] [wire
   if (opt("--model")) { session.knobs = { ...(session.knobs ?? {}), main_model: opt("--model") }; saveSession(session); }
   if (opt("--profile")) { session.knobs = { ...(session.knobs ?? {}), ...PROFILES[opt("--profile")!] }; saveSession(session); }
   if (cmd === "run") {
-    const flags = ["--session", "--cwd", "--title", "--model", "--profile", "--max-steps", "--prompt-file", "--strategy"];
-    const skipIdx = new Set<number>(); flags.forEach((f) => { const i = args.indexOf(f); if (i >= 0) { skipIdx.add(i); skipIdx.add(i + 1); } });
-    const positional = args.slice(1).filter((a, i) => !skipIdx.has(i + 1) && !a.startsWith("--"));
+    const positional = positionalAfter(["--session", "--cwd", "--title", "--model", "--profile", "--max-steps", "--prompt-file", "--strategy"]);
     const text = opt("--prompt-file") ? readFileSync(opt("--prompt-file")!, "utf8") : positional.length === 1 && positional[0] === "-" ? readFileSync(0, "utf8") : positional.join(" ");
     if (!text.trim()) throw new Error("empty prompt");
     const json = flag("--json");

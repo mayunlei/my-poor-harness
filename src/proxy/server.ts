@@ -118,7 +118,7 @@ export class Proxy {
     this.up = upstreamFor({ provider: opts.provider ?? (opts.upstream ? "openai_compatible" : undefined), baseUrl: base, apiKey: opts.upstreamKey, wireApi: opts.wireApi });
   }
 
-  private log(...a: unknown[]) { if (this.opts.verbose) console.error("[mph-proxy]", ...a); }
+  private log(...a: unknown[]) { if (this.opts.verbose) console.error("[mph proxy]", ...a); }
 
   private upstreamHeaders(req: IncomingMessage): Record<string, string> {
     const h: Record<string, string> = {};
@@ -246,7 +246,7 @@ export class Proxy {
         res.writeHead(m.status, { "content-type": "application/json" }); res.end(m.body); return;
       }
       if (this.up.provider === "codex" || !this.opts.upstream) {
-        res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: `mph-proxy: only /responses and /models are served for the ${this.up.provider} upstream (${url})` } })); return;
+        res.writeHead(404, { "content-type": "application/json" }); res.end(JSON.stringify({ error: { message: `mph proxy: only /responses and /models are served for the ${this.up.provider} upstream (${url})` } })); return;
       }
       const up = await fetch(this.opts.upstream.replace(/\/$/, "") + url, { method: req.method, headers: this.upstreamHeaders(req), body: ["GET", "HEAD"].includes(req.method ?? "GET") ? undefined : rawBody });
       res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "application/octet-stream" });
@@ -280,6 +280,6 @@ export class Proxy {
         this.passthrough(req, res, raw).catch(() => res.end());
       });
     });
-    server.listen(this.opts.port, () => console.error(`mph-proxy listening on :${this.opts.port} → ${this.up.describe()} (recall=${this.opts.recallMode}, tokenizer=${tokenizerName()}, home=${harnessHome()})`));
+    server.listen(this.opts.port, () => console.error(`mph proxy listening on :${this.opts.port} → ${this.up.describe()} (recall=${this.opts.recallMode}, tokenizer=${tokenizerName()}, home=${harnessHome()})`));
   }
 }

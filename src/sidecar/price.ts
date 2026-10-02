@@ -231,12 +231,12 @@ export function fitPrice(ledger: Ledger, opts: FitPriceOptions = {}): PriceFit {
   const usable = groups.some((g) => g.confidence === "medium");
   if (!usable) {
     advice.push("Passive ledger data cannot price this subscription. Measure it instead:");
-    advice.push("  mph-sidecar price-probe --models gpt-5.6-sol --n 8 --settle 20        # plan only (default)");
-    advice.push("  mph-sidecar price-probe --models gpt-5.6-sol --n 8 --settle 20 --go   # sends requests, spends credits");
+    advice.push("  mph price-probe --models gpt-5.6-sol --n 8 --settle 20        # plan only (default)");
+    advice.push("  mph price-probe --models gpt-5.6-sol --n 8 --settle 20 --go   # sends requests, spends credits");
     advice.push("The probe needs a QUIET account: stop every other Codex client first, or the measurement is someone else's traffic.");
   } else {
     advice.push("These are observational rates for one scalar (credits per unit of cost-equivalent), not the three weights.");
-    advice.push("For the cached / uncached / output split run: mph-sidecar price-probe --models <model> --go");
+    advice.push("For the cached / uncached / output split run: mph price-probe --models <model> --go");
   }
 
   return {

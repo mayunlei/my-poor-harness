@@ -1,5 +1,6 @@
 /**
- * The project is my-poor-harness and the CLI is mph. One name, everywhere.
+ * The project is my-poor-harness and the CLI is mph -- one name, and since the four
+ * binaries were merged, one command.
  * These tests fail if the old name creeps back in, which is easy to do: it hid
  * in a split HTML tag, in a wire-protocol string and in three duplicated
  * home-directory defaults the first time round.
@@ -71,7 +72,7 @@ test("no old name anywhere in the shipped source, scripts, bins or docs", () => 
     const text = readFileSync(f, "utf8");
     for (const [i, line] of text.split("\n").entries()) {
       // \bTH_ does not match AUTH_BASE or JWT_AUTH_CLAIM, which are not ours
-      if (/token[-_]harness|TOKEN_HARNESS|\bTH_[A-Z]|\bth-(proxy|sidecar|dash)\b/i.test(line)) {
+      if (/token[-_]harness|TOKEN_HARNESS|\bTH_[A-Z]|\bth-(proxy|sidecar|dash)\b|\bmph-(proxy|sidecar|dash)\b/i.test(line)) {
         offenders.push(`${f.slice(ROOT.length + 1)}:${i + 1}: ${line.trim().slice(0, 90)}`);
       }
     }
@@ -88,9 +89,9 @@ test("the dashboard page names itself correctly, even split across markup", asyn
 test("package metadata and the bin names agree", () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.name, "my-poor-harness");
-  assert.deepEqual(Object.keys(pkg.bin).sort(), ["mph", "mph-dash", "mph-proxy", "mph-sidecar"]);
-  for (const target of Object.values(pkg.bin) as string[]) {
-    assert.match(target, /^bin\/mph(-\w+)?\.js$/);
-    assert.ok(readFileSync(join(ROOT, target), "utf8").includes("launch("), `${target} is a launcher`);
-  }
+  // one CLI: mph proxy / mph dash / mph report replaced the extra binaries
+  assert.deepEqual(Object.keys(pkg.bin), ["mph"], "there is exactly one command");
+  assert.equal(pkg.bin.mph, "bin/mph.js");
+  assert.ok(readFileSync(join(ROOT, pkg.bin.mph), "utf8").includes("launch("), "bin/mph.js is a launcher");
+  assert.deepEqual(readdirSync(join(ROOT, "bin")).sort(), ["_launch.js", "mph.js"], "no leftover launchers");
 });

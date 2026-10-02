@@ -101,7 +101,7 @@ ledger row; the sidecar reads the ledger to report savings, tune knobs within bo
 provenance for every change it makes.
 
 **8. Show me the money, live.**
-A saving you can't see is a saving you won't trust. `mph-dash` tails the ledger and shows the
+A saving you can't see is a saving you won't trust. `mph dash` tails the ledger and shows the
 quota stretch, the tokens that were never sent, and every fold as it happens — see below.
 
 **9. ReAct is a default, not a law.**
@@ -123,12 +123,17 @@ task-dependent and should be measured, not argued about.
 
 ## The commands
 
+One command, `mph`. `mph help` prints all of it; `mph <command> --help` has the flags.
+
 | command | what it does |
 |---|---|
-| `mph` | the agent loop: `chat`, `run`, `map`, `compare`, plus `login` / `config` / `knobs` / `sessions` |
-| `mph-proxy` | transparent `/v1/responses` proxy — keep your current client, send fewer tokens |
-| `mph-dash` | live dashboard: what you are saving, and what it is costing in credits |
-| `mph-sidecar` | report on the ledger, tune knobs, measure the real per-model price |
+| `chat` · `run` | the agent loop, interactive or one-shot, with `fork` / `merge` and long-term memory |
+| `proxy` | transparent `/v1/responses` proxy — keep your current client, send fewer tokens |
+| `dash` | live dashboard: what you are saving, and what it is costing in credits |
+| `report` · `tune` · `watch` · `history` | read the ledger, move the knobs within bounds, with provenance |
+| `price` · `price-probe` | what a model really costs: fitted from the ledger, or measured with a burst |
+| `map` · `compare` · `strategies` | map-reduce over items; A/B two agent topologies on the same tasks |
+| `knobs` · `memory` · `skill` · `config` · `login` | settings, long-term memory, SKILL.md folders, upstream |
 
 ## Install
 
@@ -140,11 +145,11 @@ has `node:sqlite` but answers `no such module: fts5`).
 # a) the standalone release: no toolchain, no npm install, no network
 gh release download --repo mayunlei/my-poor-harness --pattern '*standalone.tar.gz'
 tar xzf my-poor-harness-*-standalone.tar.gz && cd my-poor-harness-*/
-node bin/mph-dash.js --open
+node bin/mph.js help
 
 # b) the npm tarball, if you want the commands on your PATH
 gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz'
-npm install -g ./my-poor-harness-*.tgz        # mph, mph-proxy, mph-dash, mph-sidecar
+npm install -g ./my-poor-harness-*.tgz        # puts one command, `mph`, on your PATH
 ```
 
 Check what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.
@@ -183,7 +188,7 @@ npm run sidecar -- report
 
 ### 1. Point it at a model
 
-By default both `mph` and `mph-proxy` talk to the ChatGPT Codex backend with your ChatGPT
+By default both `mph chat` and `mph proxy` talk to the ChatGPT Codex backend with your ChatGPT
 login — the same thing the Codex CLI does. No API key.
 
 ```bash
@@ -207,7 +212,7 @@ MPH_OPENAI_BASE_URL=https://coding.dashscope.aliyuncs.com/v1 MPH_OPENAI_API_KEY=
 The lowest-effort win: nothing about your workflow changes except the token bill.
 
 ```bash
-mph-proxy --port 8791 --verbose
+mph proxy --port 8791 --verbose
 ```
 
 Then point Codex at it in `~/.codex/config.toml`:
@@ -237,7 +242,7 @@ turn's tokens.
 ### 4. Watch what it is doing
 
 ```bash
-mph-dash --open
+mph dash --open
 ```
 
 The layout, with example numbers (what your own run shows depends entirely on your sessions):
@@ -274,12 +279,13 @@ totals are sound and a single row is not. The page says so, in place.
 ### 5. Report, tune, and measure the price
 
 ```bash
-mph-sidecar report                 # cost, credits, cache, compaction net effect, pass rates
-mph-sidecar tune --dry-run         # what it would change to the knobs, and why
-mph-sidecar watch --every 900      # report + tune on a loop
-mph-sidecar price                  # per-model price from the ledger — refuses when it cannot
-mph-sidecar price-probe            # measure it with a controlled burst (dry run unless --go)
+mph report                         # cost, credits, cache, compaction net effect, pass rates
+mph tune --dry-run                 # what it would change to the knobs, and why
+mph watch --every 900              # report + tune on a loop
+mph price                           # per-model price from the ledger — refuses when it cannot
+mph price-probe                     # measure it with a controlled burst (dry run unless --go)
 mph knobs                          # every knob and its current value
+mph history                        # every knob change: when, by whom, why
 ```
 
 ### 6. Try a different agent topology

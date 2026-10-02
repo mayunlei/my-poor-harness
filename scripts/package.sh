@@ -58,7 +58,7 @@ npm ls --omit=dev --parseable --all 2>/dev/null | tail -n +2 | while read -r dep
 done
 
 # Smoke-test the staged copy the way a user would run it.
-( cd "$STAGE" && node bin/mph-dash.js --help >/dev/null && node bin/mph-sidecar.js --help >/dev/null ) \
+( cd "$STAGE" && node bin/mph.js help >/dev/null && node bin/mph.js dash --help >/dev/null && node bin/mph.js report --help >/dev/null ) \
   || { echo "staged tarball failed its smoke test" >&2; exit 1; }
 
 tar -czf "$OUT/$NAME-$VERSION-standalone.tar.gz" -C "$STAGE_ROOT" "$NAME-$VERSION"
@@ -71,4 +71,4 @@ echo "==> artifacts"
 ls -lh "$OUT" | tail -n +2 | awk '{printf "    %-48s %s\n", $9, $5}'
 echo
 echo "install from the npm tarball:   npm install -g $TGZ"
-echo "or run the standalone:          tar xzf $OUT/$NAME-$VERSION-standalone.tar.gz && node $NAME-$VERSION/bin/mph-dash.js"
+echo "or run the standalone:          tar xzf $OUT/$NAME-$VERSION-standalone.tar.gz && node $NAME-$VERSION/bin/mph.js help"

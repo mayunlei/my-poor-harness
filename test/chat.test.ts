@@ -1,7 +1,7 @@
 /**
  * Chat Completions wire adapter: Responses ⇄ chat translation, streaming translation,
  * auto-fallback from /responses (404) to /chat/completions, and the harness client /
- * mph-proxy going through a chat-only endpoint.
+ * `mph proxy` going through a chat-only endpoint.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -107,7 +107,7 @@ test("upstream: auto-fallback from /responses 404 to chat; explicit wire_api=cha
   await m.close();
 });
 
-test("harness client and mph-proxy run tool loops over a chat-only endpoint", async () => {
+test("harness client and mph proxy run tool loops over a chat-only endpoint", async () => {
   const m = await chatMock((body, n) => n === 0 ? { tool_calls: [{ id: "call_1", name: "run", arguments: JSON.stringify({ cmd: "echo hi" }) }] } : { content: "done" });
   const { OpenAIResponsesClient } = await import("../src/harness/providers.js");
   const c = new OpenAIResponsesClient(upstreamFor({ baseUrl: m.url, wireApi: "chat" }));
