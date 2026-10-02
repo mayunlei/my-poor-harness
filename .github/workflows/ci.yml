@@ -12,7 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ['20', '22', '24']
+        # 24 only: the memory store uses node:sqlite, and FTS5 is compiled in from 24
+        node: ['24']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

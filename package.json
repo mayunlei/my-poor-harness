@@ -6,7 +6,7 @@
   "type": "module",
   "license": "MIT",
   "engines": {
-    "node": ">=20.11"
+    "node": ">=24"
   },
   "bin": {
     "mph": "bin/mph.js",
