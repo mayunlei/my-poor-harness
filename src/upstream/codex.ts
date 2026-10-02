@@ -9,10 +9,15 @@
  *     originator, session_id (optional; we use prompt_cache_key)
  * A client that asked for a non-streaming reply gets the SSE aggregated into the final
  * `response` JSON. A 401 triggers one credential refresh and a retry.
+ *
+ * The response headers carry the quota/credits meter (see meter.ts). They are the channel the
+ * meter travels on, so the aggregated JSON Response we synthesize for non-streaming callers
+ * copies them over verbatim: callers read `parseMeter(res.headers)` whichever path they took.
  */
 import { CodexAuth, type CodexCredentials } from "./codex_auth.js";
 import { contentText } from "../core/items.js";
 import { ResponseCollector, parseSseBlocks } from "./sse.js";
+import { meterHeaders, parseMeter, type MeterSnapshot } from "./meter.js";
 
 export interface CodexSendOptions {
   /** whether the caller will consume SSE; otherwise the stream is aggregated into JSON */
@@ -71,6 +76,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> { return new Pro
 export class CodexTransport {
   maxRetries = 3;
   backoffMs = 1000;
+  /** meter of the most recent response, for callers that only kept the body (e.g. a meter poll) */
+  lastMeter?: MeterSnapshot;
   constructor(readonly auth: CodexAuth, readonly baseUrl: string, readonly originator = "codex_cli_rs") {}
 
   get responsesUrl(): string { return this.baseUrl.replace(/\/$/, "") + "/codex/responses"; }
@@ -94,8 +101,10 @@ export class CodexTransport {
       if ((r.status === 429 || r.status >= 500) && attempt < this.maxRetries) { await r.text().catch(() => ""); await sleep(this.backoffMs * 2 ** attempt, opts.signal); continue; }
       break;
     }
-    if (opts.stream || !r.ok) return r;
+    if (opts.stream || !r.ok) { this.lastMeter = parseMeter(r.headers) ?? this.lastMeter; return r; }
+    const meter = meterHeaders(r.headers);
     const { status, json } = await aggregateSse(r);
-    return new Response(JSON.stringify(json), { status, headers: { "content-type": "application/json" } });
+    this.lastMeter = parseMeter(meter) ?? this.lastMeter;
+    return new Response(JSON.stringify(json), { status, headers: { ...meter, "content-type": "application/json" } });
   }
 }

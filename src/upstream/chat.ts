@@ -17,6 +17,7 @@
  *   tools: function → function; custom → function{input:string}; built-in tools (web_search, …) dropped
  */
 import { contentText, outputText } from "../core/items.js";
+import { meterHeaders } from "./meter.js";
 
 function msgText(content: any): string { return contentText(content); }
 
@@ -189,16 +190,18 @@ export async function chatResponses(baseUrl: string, apiKey: string | undefined,
       break;
     } catch (e) { if (attempt >= 3 || opts.signal?.aborted) throw e; await new Promise((res) => setTimeout(res, 1000 * 2 ** attempt)); }
   }
-  if (!r!.ok || !r!.body) return new Response(await r!.text(), { status: r!.status, headers: { "content-type": r!.headers.get("content-type") ?? "application/json" } });
+  // a gateway in front of a Codex-like backend may still pass the meter headers through; keep them
+  const meter = meterHeaders(r!.headers);
+  if (!r!.ok || !r!.body) return new Response(await r!.text(), { status: r!.status, headers: { ...meter, "content-type": r!.headers.get("content-type") ?? "application/json" } });
   const ct = r!.headers.get("content-type") ?? "";
   if (ct.includes("application/json")) {
     // gateway ignored stream=true
     const j = await r!.json();
     const resp = chatToResponse(j, body.model);
-    if (!opts.stream) return new Response(JSON.stringify(resp), { status: 200, headers: { "content-type": "application/json" } });
+    if (!opts.stream) return new Response(JSON.stringify(resp), { status: 200, headers: { ...meter, "content-type": "application/json" } });
     const tr = new ChatStreamTranslator(body.model);
     const text = tr.feed({ id: j.id, model: j.model }) + resp.output.map((item: any, i: number) => sse({ type: "response.output_item.done", output_index: i, item })).join("") + sse({ type: "response.completed", response: resp });
-    return new Response(text, { status: 200, headers: { "content-type": "text/event-stream" } });
+    return new Response(text, { status: 200, headers: { ...meter, "content-type": "text/event-stream" } });
   }
   const tr = new ChatStreamTranslator(body.model);
   const reader = r!.body.getReader(); const dec = new TextDecoder();
@@ -221,8 +224,8 @@ export async function chatResponses(baseUrl: string, apiKey: string | undefined,
   };
   if (!opts.stream) {
     await pump(() => {});
-    if (tr.error) return new Response(JSON.stringify({ error: tr.error }), { status: 502, headers: { "content-type": "application/json" } });
-    return new Response(JSON.stringify(tr.response()), { status: 200, headers: { "content-type": "application/json" } });
+    if (tr.error) return new Response(JSON.stringify({ error: tr.error }), { status: 502, headers: { ...meter, "content-type": "application/json" } });
+    return new Response(JSON.stringify(tr.response()), { status: 200, headers: { ...meter, "content-type": "application/json" } });
   }
   const enc = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -232,5 +235,5 @@ export async function chatResponses(baseUrl: string, apiKey: string | undefined,
       ctrl.close();
     },
   });
-  return new Response(stream, { status: 200, headers: { "content-type": "text/event-stream" } });
+  return new Response(stream, { status: 200, headers: { ...meter, "content-type": "text/event-stream" } });
 }

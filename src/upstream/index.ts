@@ -67,3 +67,4 @@ export function upstreamFor(overrides: UpstreamOverrides = {}, env: NodeJS.Proce
 
 export { resolveUpstream, describeUpstream, loadConfigFile, saveConfigFile, configPath, type ResolvedUpstream, type UpstreamOverrides, type Provider, type WireApi } from "./config.js";
 export { CodexAuth, loadCredentials, saveCredentials, clearCredentials, authFilePath, codexCliAuthPath, planFromToken } from "./codex_auth.js";
+export { parseMeter, meterDelta, meterHeaders, METER_HEADERS, type MeterSnapshot, type MeterWindow, type MeterCredits, type MeterDelta } from "./meter.js";

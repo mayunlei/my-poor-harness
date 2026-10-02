@@ -13,6 +13,7 @@ export interface LedgerRow {
   turn: number;
   step: number;
   model?: string;
+  effort?: string;
   policy_version?: string;
   knobs_hash?: string;
   input?: number;
@@ -23,7 +24,9 @@ export interface LedgerRow {
   ctx_before?: number;      // tokens the client would have sent
   ctx_after?: number;       // tokens actually sent after rewrite
   delta_new?: number;
-  event?: "compact" | "keep" | "fork" | "shape" | "dedupe" | "wait" | "recall" | "poll_collapse" | "delegate" | "merge" | "knob_change" | "response";
+  // savings events, then the phases a strategy goes through (see src/harness/strategies)
+  event?: "compact" | "keep" | "fork" | "shape" | "dedupe" | "wait" | "recall" | "poll_collapse" | "delegate" | "merge" | "knob_change" | "response"
+        | "plan" | "step" | "verify" | "argue" | "replan" | "strategy";
   tool_kind?: string;
   idle_s?: number;
   cache_state?: "warm" | "cold" | "unknown";
@@ -31,10 +34,30 @@ export interface LedgerRow {
   retries?: number;
   task_outcome?: "success" | "fail" | "unknown";
   cost_equiv?: number;
+  // quota/billing meter off the response headers (Codex upstream only; see src/upstream/meter.ts)
+  credits_balance?: number;        // x-codex-credits-balance after this response
+  credits_spent?: number;          // balance drop since the previous observed response of this session.
+                                   // NOT this response's price: the backend's balance is eventually
+                                   // consistent, so only the sum over a burst means anything.
+  primary_used_percent?: number;   // integer 0..100, shared with other devices on the account
+  secondary_used_percent?: number;
+  plan_type?: string;
+  active_limit?: string;
   note?: string;
   extra?: Record<string, unknown>;
 }
 
+/**
+ * Cost-equivalent weights, in units of "one uncached input token". They are a PLACEHOLDER:
+ * 0.1 / 1 / 8 is the public pay-as-you-go shape (cached input is a tenth, output is eight
+ * times input), and it has NOT been verified against what a Codex subscription actually
+ * charges — a subscription meters quota, not dollars, and may weigh the three classes
+ * differently or not weigh output at all. Every savings number derived from costEquiv is
+ * therefore a relative figure, trustworthy for comparing two policies on the same weights and
+ * nothing more. `th-sidecar price` estimates the real weights from the credits meter in the
+ * ledger, and `th-sidecar price-probe` measures them with a controlled experiment; until one of
+ * those has run, do not quote costEquiv as money.
+ */
 export const PRICE = { cached: 0.1, uncached: 1.0, output: 8.0, cacheWrite: 1.0 };
 
 export function costEquiv(r: { cached?: number; uncached?: number; output?: number }): number {

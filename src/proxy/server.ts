@@ -23,6 +23,7 @@ import { sha1, outputText } from "../core/items.js";
 import { initTokenizer, tokenizerName, countTokens } from "../core/tokens.js";
 import { upstreamFor, type Upstream, type Provider } from "../upstream/index.js";
 import { ResponseCollector, SseLineBuffer, parseSseBlocks } from "../upstream/sse.js";
+import { parseMeter, meterDelta, type MeterSnapshot } from "../upstream/meter.js";
 
 export interface ProxyOptions {
   port: number;
@@ -109,6 +110,8 @@ export class Proxy {
   readonly sessions = new SessionStore();
   readonly ledger = new Ledger();
   private steps = new Map<string, number>();
+  /** last meter snapshot per session, to turn an absolute credits balance into an observed drop */
+  private lastMeter = new Map<string, MeterSnapshot>();
   readonly up: Upstream;
   constructor(readonly opts: ProxyOptions) {
     const base = opts.upstream ? opts.upstream.replace(/\/$/, "") + (opts.upstreamPath ?? "/v1/responses").replace(/\/responses$/, "") : undefined;
@@ -153,7 +156,7 @@ export class Proxy {
     this.log(`session=${sid.slice(0, 12)} step=${step} ctx ${rw.stats.tokensBefore}→${rw.stats.tokensAfter} folded=${rw.stats.folded} shaped=${rw.stats.shaped} polls=${rw.stats.pollsCollapsed} dedupe=${rw.stats.readsDeduped} cache=${rw.stats.cacheState}${rw.stats.compacted ? " COMPACT(" + rw.stats.compactReason + ")" : ""}${substituted ? " recall=" + substituted : ""}`);
 
     const stream = body.stream !== false;
-    let usage: any = null; let outputItems: any[] = []; let streamError: string | undefined;
+    let usage: any = null; let outputItems: any[] = []; let streamError: string | undefined; let meter: MeterSnapshot | undefined;
     const doUpstream = async (b: any): Promise<Response> => this.up.responses(b, { stream, sessionId: sid, forwardHeaders: this.upstreamHeaders(req) });
 
     try {
@@ -162,6 +165,7 @@ export class Proxy {
         let cur = upstreamBody; let text = ""; let events: any[] = [];
         for (let hop = 0; hop < 4; hop++) {
           const up = await doUpstream(cur);
+          meter = parseMeter(up.headers) ?? meter;   // last hop wins: the balance after the final call
           if (!up.ok || !up.body) { res.writeHead(up.status, { "content-type": up.headers.get("content-type") ?? "text/plain" }); res.end(await up.text()); return; }
           text = await up.text(); events = parseSseBlocks(text);
           const items = finalOf(events)?.output ?? [];
@@ -181,6 +185,7 @@ export class Proxy {
         usage = fin?.usage ?? null; outputItems = fin?.output ?? [];
       } else {
         const up = await doUpstream(upstreamBody);
+        meter = parseMeter(up.headers);
         const ct = up.headers.get("content-type") ?? (stream && up.ok ? "text/event-stream" : "application/json");   // the Codex backend omits content-type on SSE
         const isSse = stream && up.ok && !ct.includes("application/json");
         const outHeaders: Record<string, string> = { "content-type": isSse ? "text/event-stream; charset=utf-8" : ct, "cache-control": "no-cache" };
@@ -215,8 +220,15 @@ export class Proxy {
     const cached = usage?.input_tokens_details?.cached_tokens ?? 0;
     const inTok = usage?.input_tokens ?? rw.stats.tokensAfter;
     const toolKind = outputItems.find((x: any) => x.type === "function_call" || x.type === "custom_tool_call")?.name;
+    const prev = this.lastMeter.get(sid);
+    const spent = meter && prev ? meterDelta(prev, meter).creditsSpent : undefined;
+    if (meter) this.lastMeter.set(sid, meter);
     this.ledger.append({
-      source: "proxy", session: sid, turn: state.turnIndex, step, model: body.model, knobs_hash: sha1(JSON.stringify(knobs)).slice(0, 8),
+      source: "proxy", session: sid, turn: state.turnIndex, step, model: body.model, effort: typeof body?.reasoning?.effort === "string" ? body.reasoning.effort : undefined,
+      knobs_hash: sha1(JSON.stringify(knobs)).slice(0, 8),
+      credits_balance: meter?.credits?.balance, credits_spent: spent,
+      primary_used_percent: meter?.primary?.usedPercent, secondary_used_percent: meter?.secondary?.usedPercent,
+      plan_type: meter?.planType, active_limit: meter?.activeLimit,
       input: inTok, cached, uncached: inTok - cached, output: usage?.output_tokens ?? 0, reasoning: usage?.output_tokens_details?.reasoning_tokens ?? 0,
       ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter,
       event: rw.stats.compacted ? "compact" : rw.stats.isTurnStart ? "keep" : "response",
