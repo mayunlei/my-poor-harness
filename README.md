@@ -322,6 +322,7 @@ In `chat`:
 | `/fork <name>` · `/merge <branch>` · `/discard` | branch for a side question; bring the branch back (its user messages verbatim) |
 | `/save <一句话注释>` | keep this session in the backtest dataset (see 9.) |
 | `/strategy plan_verify` · `/stats` · `/vibe` | switch execution strategy; this session's tokens; configure by talking |
+| `/verbose` · `/status` | one line per tool call instead of one per step; turn the bottom status bar on or off |
 
 Tools: `read`, `write_file`, `edit`, `multi_edit`, `ls`, `grep`, `run` / `wait` (blocking, no
 polling), `recall`, `delegate`, `memory_search` / `memory_get` / `remember`, `skill`. Skills are
@@ -330,6 +331,47 @@ in `~/.mph/skills`, `~/.claude/skills`, `~/.codex/skills` — existing ones work
 capabilities are CLIs the skills document, run with `run`. Memory can be switched off:
 `mph config memory_recall=off` (stop using it) or `memory_write=off` (stop recording).
 There is no command approval or sandbox: commands run with your permissions.
+
+What a turn looks like: tool calls are folded to one line per step, and the bottom line
+keeps the task title, the token spend, the elapsed time and the last model latency.
+
+```
+  ? rebuild (rule: nothing to carry)
+  * step 1  4 tools (ls, grep, read x2)  1 dedupe  2.4s
+  * step 2  2 tools (run, read)  1.1s
+底部状态栏已经可以展示任务标题、token 消耗和延时。
+  [3 steps · in 2320 (cached 1856, 80%) · out 150 · cost≈1900]
+ 当前的cli不是很友好 · in 2.3k (80% cached) out 150 · 1:04 · last 5.2s · tools: run
+```
+
+`/verbose` (or `--verbose`) expands the fold back to one line per call with its arguments.
+
+**If your terminal dies mid-turn, it is probably not mph.** Apple Terminal 2.14 on
+macOS 14.7.1 crashes a few seconds into a streaming turn: its timer-driven link detector
+walks the scrollback as an `NSAttributedString` (`__NSFireTimer` →
+`-[NSAttributedString URLAtIndex:effectiveRange:]` → `CFStringFindCharacterFromSet` →
+`_platform_memmove`, SIGSEGV at 0) and takes mph with it, mid-turn. Terminal is not ours
+to fix, so `src/harness/render.ts` stops handing it the input it chokes on: one writer
+instead of answer-on-stdout and events-on-stderr, whole lines instead of per-token
+writes, every line hard-wrapped to the window so nothing can be reflowed, writes
+coalesced into one syscall per `ui_flush_ms`, and ESC and the other C0 controls stripped
+from anything a model or a tool produced. If it still happens, `mph config
+ui_status_bar=off` (or `--plain`) leaves the terminal with nothing to redraw at all.
+
+```bash
+mph config ui_status_bar=off     # no bottom status line
+mph config ui_fold_tools=off     # one line per tool call, always
+mph config ui_glyphs=unicode     # ⚙ ↩ ≡ instead of the ascii tags
+mph config ui_flush_ms=0         # write every update immediately (noisier, more syscalls)
+mph config ui_wrap=off           # do not hard-wrap (this is the one that brings the crash back)
+mph config ui_color=off          # no reverse video on the status line
+```
+
+`MPH_UI_STATUS_BAR`, `MPH_UI_FOLD_TOOLS`, `MPH_UI_WRAP`, `MPH_UI_FLUSH_MS`,
+`MPH_UI_GLYPHS` and `MPH_UI_COLOR` override the file; `NO_COLOR` and `TERM=dumb` are
+honoured; `--plain` turns the whole lot off for one command. None of it applies to
+`--json`, which writes its own newline-delimited wire format and never touches the
+renderer.
 
 ### 5. Watch what it is doing
 

@@ -118,7 +118,8 @@ export function wrapToWidth(s: string, cols: number): string[] {
     const sp = head.lastIndexOf(" ");
     const cut = sp > cols * 0.5 ? sp + 1 : head.length;
     out.push(rest.slice(0, cut).replace(/\s+$/, ""));
-    rest = rest.slice(cut);
+    // a cut that landed on a word boundary would otherwise indent the continuation
+    rest = rest.slice(cut).replace(/^ +/, "");
   }
   if (rest) out.push(rest);
   return out;
@@ -254,7 +255,9 @@ export class Renderer {
       else this.schedule();
       return;
     }
-    if (!this.verbose && this.ui.foldTools && (e.kind === "dedupe" || e.kind === "recall" || e.kind === "batch" || e.kind === "job" || e.kind === "memory_miss")) {
+    // the batch line says "4 tool calls in one response"; the fold line already does
+    if (!this.verbose && this.ui.foldTools && e.kind === "batch") return;
+    if (!this.verbose && this.ui.foldTools && (e.kind === "dedupe" || e.kind === "recall" || e.kind === "job" || e.kind === "memory_miss")) {
       this.stepQuiet.set(e.kind, (this.stepQuiet.get(e.kind) ?? 0) + 1);
       this.statusDirty = true; this.schedule();
       return;
@@ -348,28 +351,40 @@ export class Renderer {
    */
   statusText(): string {
     const st = this.st;
-    const segs: { s: string; p: number }[] = [];
-    const tokens = `in ${k(st.input)}${st.input ? ` (${Math.round((100 * st.cached) / Math.max(1, st.input))}% cached)` : ""} out ${k(st.output)}`;
-    segs.push({ s: tokens, p: 9 });
-    if (this.turnStartedAt) segs.push({ s: secs(Date.now() - this.turnStartedAt), p: 8 });
-    if (st.step) segs.push({ s: `step ${st.step}${st.maxSteps ? "/" + st.maxSteps : ""}`, p: 7 });
-    if (st.phase) segs.push({ s: this.stepTools.length && st.phase === "tools" ? `${st.phase}: ${countsOf(this.stepTools)}` : st.phase, p: 6 });
-    if (st.lastLatencyMs) segs.push({ s: `last ${secs(st.lastLatencyMs)}`, p: 5 });
-    if (st.model) segs.push({ s: st.model, p: 4 });
+    // each segment may offer shorter forms; a narrow window shortens before it drops,
+    // and the task and the token spend are the last two things standing
+    const segs: { forms: string[]; p: number }[] = [];
+    segs.push({ p: 9, forms: [
+      `in ${k(st.input)}${st.input ? ` (${Math.round((100 * st.cached) / Math.max(1, st.input))}% cached)` : ""} out ${k(st.output)}`,
+      `in ${k(st.input)} out ${k(st.output)}`,
+      `${k(st.input)}/${k(st.output)}`,
+    ] });
+    if (this.turnStartedAt) segs.push({ p: 8, forms: [secs(Date.now() - this.turnStartedAt)] });
+    if (st.lastLatencyMs) segs.push({ p: 7, forms: [`last ${secs(st.lastLatencyMs)}`] });
+    if (st.phase) segs.push({ p: 6, forms: [this.stepTools.length && st.phase === "tools" ? `${st.phase}: ${countsOf(this.stepTools)}` : st.phase, st.phase] });
+    if (st.step) segs.push({ p: 5, forms: [`step ${st.step}${st.maxSteps ? "/" + st.maxSteps : ""}`, `s${st.step}`] });
+    if (st.model) segs.push({ p: 4, forms: [st.model] });
+
     const max = this.width - 1;
+    const minTitle = Math.min(12, displayWidth(st.title || "mph"));
+    const at = new Map<typeof segs[number], number>(segs.map((x) => [x, 0]));
     for (;;) {
-      const tail = segs.map((x) => x.s).join(" · ");
-      const room = max - displayWidth(tail) - (tail ? 3 : 0);
-      if (room >= 8 || segs.length === 0) {
-        const title = ellipsize(st.title || "mph", Math.max(1, room));
-        const body = " " + [title, tail].filter(Boolean).join(" · ");
-        const text = cutToWidth(body, max);
+      const tail = segs.map((x) => x.forms[at.get(x)!]).join(" · ");
+      const room = max - 1 - displayWidth(tail) - (tail ? 3 : 0);   // 1 for the leading space
+      const last = segs.length <= 1 && (!segs.length || at.get(segs[0])! === segs[0].forms.length - 1);
+      if (room >= minTitle || last) {
+        const title = room > 0 ? ellipsize(st.title || "mph", room) : "";
+        const text = cutToWidth(" " + [title, tail].filter(Boolean).join(" · "), max);
         const pad = text + " ".repeat(Math.max(0, max - displayWidth(text)));
         return this.ui.color ? `\u001b[7m${pad}\u001b[0m` : pad;
       }
-      let worst = 0;
-      for (let i = 1; i < segs.length; i++) if (segs[i].p < segs[worst].p) worst = i;
-      segs.splice(worst, 1);
+      // drop the least important segment; only the last one standing is shortened,
+      // so a 120-column window never shows "12.3k/1.2k" next to the model name
+      if (segs.length > 1) {
+        let worst = 0;
+        for (let i = 1; i < segs.length; i++) if (segs[i].p < segs[worst].p) worst = i;
+        segs.splice(worst, 1);
+      } else at.set(segs[0], at.get(segs[0])! + 1);
     }
   }
 
@@ -410,10 +425,10 @@ function countsOf(names: string[]): string {
   return [...c].map(([n, k2]) => (k2 > 1 ? `${n} x${k2}` : n)).join(", ");
 }
 
-/** 1.2k / 34.5k / 1.2M -- the status line has no room for 1234567 */
+/** 1.2k / 12.3k / 123k / 1.2M -- the status line has no room for 1234567 */
 function k(n: number): string {
   if (n < 1000) return String(n);
-  if (n < 1_000_000) return (n / 1000).toFixed(n < 10_000 ? 1 : 0) + "k";
+  if (n < 1_000_000) return (n / 1000).toFixed(n < 100_000 ? 1 : 0) + "k";
   return (n / 1_000_000).toFixed(1) + "M";
 }
 

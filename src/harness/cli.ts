@@ -22,6 +22,8 @@ import type { GateAction } from "./gate.js";
 import { VIBE_PROMPT, VIBE_TOOL_NAMES } from "./vibe.js";
 import { loadCredentials } from "../upstream/codex_auth.js";
 import { LEDGER_COMMANDS } from "../sidecar/commands.js";
+import { Renderer } from "./render.js";
+import { uiSettings } from "../upstream/config.js";
 
 const HELP = `mph — one command for the whole harness. State lives in ~/.mph (override with MPH_HOME).
 \`mph <command> --help\` has the flags for the bigger ones.
@@ -55,7 +57,12 @@ settings
   memory list|search|get|pin|unpin|forget|export|import|gc
   skill list | show <name>
   login | logout | whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
-  config [k=v ...]                             provider, base_url, api_key, wire_api, *_model, memory_*`;
+  config [k=v ...]                             provider, base_url, api_key, wire_api, *_model, memory_*
+                                               ui_status_bar, ui_fold_tools, ui_glyphs, ui_wrap, ui_flush_ms, ui_color
+
+terminal (any command)
+  --verbose                                    one line per tool call instead of one line per step
+  --plain                                      no status bar, no colour: for a dumb terminal or a pipe`;
 
 const MODEL_TIERS = ["main", "mid", "small"] as const;
 type ModelTier = typeof MODEL_TIERS[number];
@@ -199,13 +206,43 @@ function positionalAfter(flags: string[]): string[] {
   return args.slice(1).filter((a, i) => !skip.has(i + 1) && !a.startsWith("--"));
 }
 
-function printEvent(e: { kind: string; detail: string }) {
-  const tag = { tool: "⚙", recall: "↩", dedupe: "≡", delegate: "⇢", job: "⏳", commentary: "…", plan: "▣", step: "▸", verify: "✓", argue: "⇄", replan: "↻", compare: "⊞", warn: "!", gate: "◇", skill: "✦", memory_miss: "?", batch: "⇉", settings: "◆" }[e.kind] ?? "•";
-  process.stderr.write(`  ${tag} ${e.detail}\n`);
+/**
+ * One renderer per process, and every line of human-facing output goes through it.
+ * That is the point: events used to go to stderr while the answer went to stdout,
+ * and two fds interleaving on one pty is one of the things that kills Apple
+ * Terminal mid-turn (see src/harness/render.ts).
+ */
+let renderShared: Renderer | undefined;
+function renderer(): Renderer {
+  if (!renderShared) {
+    const plain = flag("--plain") || !!process.env.MPH_PLAIN;
+    renderShared = new Renderer({
+      ui: plain ? { ...uiSettings(), statusBar: false, color: false, glyphs: "ascii" } : uiSettings(),
+      verbose: flag("--verbose"),
+    });
+  }
+  return renderShared;
 }
 
+function printEvent(e: { kind: string; detail: string }) { renderer().event(e); }
+
 async function chat(session: SessionData, startInVibe = false) {
+  const render = renderer();
   const rl = createInterface({ input: process.stdin, output: process.stdout });
+  /**
+   * ^C used to close the readline interface -- with no SIGINT listener that is what
+   * node does -- and the chat then had no prompt and no way back. Now the first ^C
+   * clears the line and says so, and a second one within two seconds quits.
+   */
+  let lastSigint = 0;
+  rl.on("SIGINT", () => {
+    const now = Date.now();
+    if (now - lastSigint < 2000) { render.close(); rl.close(); process.exit(130); }
+    lastSigint = now;
+    render.suspend();
+    process.stdout.write("\n  (^C again to quit, or /quit)\n");
+    rl.prompt(true);
+  });
   let inputClosed = false;
   rl.once("close", () => { inputClosed = true; });
   const ask = (q: string) => new Promise<string>((resolveAnswer) => {
@@ -225,7 +262,8 @@ async function chat(session: SessionData, startInVibe = false) {
   let vibe = startInVibe;
   if (vibe) console.log(VIBE_BANNER);
   for (;;) {
-    const line = (await ask(`\n[${session.title}${vibe ? " · vibe" : ""}] you> `)).trim();
+    render.suspend();
+    const line = (await ask(`\n[${titleOf(session)}${vibe ? " · vibe" : ""}] you> `)).trim();
     if (inputClosed) break;
     if (!line) continue;
     let text = line;
@@ -238,7 +276,7 @@ async function chat(session: SessionData, startInVibe = false) {
     } else if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/save <一句话注释：这个会话用来解决什么问题>  (keep this session in the dataset for backtesting)\n/model [list|auto|<model>|<main|mid|small> <model>]  choose the session model (like Claude Code/Codex)\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/verbose [on|off]  /status [on|off]  (expand tool calls · bottom status bar)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/save <一句话注释：这个会话用来解决什么问题>  (keep this session in the dataset for backtesting)\n/model [list|auto|<model>|<main|mid|small> <model>]  choose the session model (like Claude Code/Codex)\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
       if (c === "model") {
          if (!rest.length || rest[0] === "list") { showModels(session); continue; }
          const tier = MODEL_TIERS.includes(rest[0] as ModelTier) ? rest[0] as ModelTier : "main";
@@ -270,6 +308,14 @@ async function chat(session: SessionData, startInVibe = false) {
         if (!(arg in STRATEGIES)) { console.log("strategies: " + Object.keys(STRATEGIES).join(", ")); continue; }
         session.knobs = { ...(session.knobs ?? {}), strategy: arg }; saveSession(session); console.log(`strategy ${arg} applied to this session`); continue;
       }
+      if (c === "verbose") {
+        const on = arg === "" ? !render.isVerbose() : !["off", "false", "0", "no"].includes(arg);
+        render.setVerbose(on); console.log(`tool calls: ${on ? "one line each (verbose)" : "folded into one line per step"}`); continue;
+      }
+      if (c === "status") {
+        const on = arg === "" ? !render.ui.statusBar : !["off", "false", "0", "no"].includes(arg);
+        render.setStatusBar(on); console.log(`status bar ${on ? "on" : "off"} (persist it with \`mph config ui_status_bar=${on ? "on" : "off"}\`)`); continue;
+      }
       if (c === "compact") { session.window = session.window.slice(-2); saveSession(session); console.log("window trimmed; next turn starts from digest"); continue; }
       if (c === "stats") { const t = session.turns; const u = t.reduce((a, x) => ({ input: a.input + x.usage.input, cached: a.cached + x.usage.cached, output: a.output + x.usage.output }), { input: 0, cached: 0, output: 0 }); console.log(`turns=${t.length} steps=${t.reduce((a, x) => a + x.steps, 0)} input=${u.input} cached=${u.cached} (${(100 * u.cached / Math.max(1, u.input)).toFixed(0)}%) output=${u.output} window=${session.window.length} files=${session.state.filesTouched.length}`); continue; }
       console.log(`unknown command /${c}; type /help to see available commands`); continue;
@@ -277,19 +323,37 @@ async function chat(session: SessionData, startInVibe = false) {
     const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any);
     const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
     const strat = vibe ? strategyFor("react") : strategyFor(knobs.strategy);
-    const r = vibe
-      ? await runTurn({ session, userText: text, knobs, store, ledger, router, ...VIBE_TURN, onText: (t) => process.stdout.write(t), onEvent: printEvent })
-      : strat.name === "react"
-      ? await runTurn({ session, userText: text, knobs, store, ledger, router, gateAction: pendingGate, onText: (t) => process.stdout.write(t), onEvent: printEvent })
-      : await strat.run({ session, userText: text, knobs, store, ledger, router, onEvent: printEvent });
-    if (!vibe && strat.name !== "react") process.stdout.write(r.text + "\n");
-    else if (!r.text.includes("[model error]")) process.stdout.write("\n");
-    else console.log(r.text);
+    const onText = (t: string) => render.text(t);
+    let r;
+    try {
+      r = vibe
+        ? await runTurn({ session, userText: text, knobs, store, ledger, router, ...VIBE_TURN, onText, onEvent: printEvent, ui: render })
+        : strat.name === "react"
+        ? await runTurn({ session, userText: text, knobs, store, ledger, router, gateAction: pendingGate, onText, onEvent: printEvent, ui: render })
+        // a strategy runs many nested turns; it reports through events and its own
+        // final text rather than fighting over one status bar
+        : await strat.run({ session, userText: text, knobs, store, ledger, router, onEvent: printEvent });
+    } finally { render.endText(); }
+    if (!vibe && strat.name !== "react") render.line(r.text);
     pendingGate = undefined;
-    const mem = (r as any).memory ? ` · memory shown ${(r as any).memory.recalled.length} written ${(r as any).memory.written.length}` : "";
-    console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output} · cost≈${Math.round(r.costEquiv)}${mem}]`);
+    render.turnEnd(turnSummary(r));
   }
+  render.close();
   rl.close();
+}
+
+/** the status bar and the prompt want the task, not the session's own id */
+function titleOf(session: SessionData): string {
+  if (session.title && session.title !== session.id) return session.title;
+  const last = session.turns[session.turns.length - 1];
+  return last ? last.user.split("\n")[0].trim().slice(0, 40) : session.id;
+}
+
+/** the one line that stays in the scrollback after a turn */
+function turnSummary(r: { steps: number; usage: { input: number; cached: number; output: number }; costEquiv: number; memory?: unknown }): string {
+  const u = r.usage;
+  const mem = (r as any).memory ? ` · memory ${(r as any).memory.recalled.length} shown ${(r as any).memory.written.length} written` : "";
+  return `  [${r.steps} steps · in ${u.input} (cached ${u.cached}, ${Math.round((100 * u.cached) / Math.max(1, u.input))}%) · out ${u.output} · cost≈${Math.round(r.costEquiv)}${mem}]`;
 }
 
 const KNOWN_COMMANDS = new Set([
@@ -413,9 +477,10 @@ async function main() {
     let s2 = opt("--session") ? findSession(opt("--session")!) : undefined;
     if (!s2) { s2 = newSession(cwd, "vibe"); if (!text) saveSession(s2); }   // only the interactive form needs the file up front
     if (!text) { await chat(s2, true); return; }
-    const r = await runTurn({ session: s2, userText: text, ...VIBE_TURN, onText: (t) => process.stdout.write(t), onEvent: printEvent });
-    process.stdout.write("\n");
-    console.log(`\n  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output}]`);
+    const render = renderer();
+    const r = await runTurn({ session: s2, userText: text, ...VIBE_TURN, onText: (t) => render.text(t), onEvent: printEvent, ui: render });
+    render.turnEnd(`  [${r.steps} steps · in ${r.usage.input} (cached ${r.usage.cached}) · out ${r.usage.output}]`);
+    render.close();
     return;
   }
 
@@ -436,27 +501,30 @@ async function main() {
     if (!text.trim()) throw new Error("empty prompt");
     const json = flag("--json");
     const out = (o: any) => process.stdout.write(JSON.stringify(o) + "\n");
+    // --json is a wire format: it writes its own lines and never touches the renderer
+    const render = json ? undefined : renderer();
     const onEvent = json ? (e: { kind: string; detail: string }) => out({ type: "event", ...e }) : printEvent;
-    const onText = json ? (t: string) => out({ type: "text", delta: t }) : (t: string) => process.stdout.write(t);
+    const onText = json ? (t: string) => out({ type: "text", delta: t }) : (t: string) => render!.text(t);
     const gateAction: GateAction | undefined = flag("--continue") ? "continue" : flag("--new") ? "rebuild" : undefined;
     const maxSteps = opt("--max-steps") ? Number(opt("--max-steps")) : undefined;
     const sname = opt("--strategy") ?? resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any).strategy;
     const strat = strategyFor(sname);
     let r;
     if (strat.name === "react") {
-      r = await runTurn({ session, userText: text, maxSteps, gateAction, onText, onEvent });
+      r = await runTurn({ session, userText: text, maxSteps, gateAction, onText, onEvent, ui: render });
     } else {
       const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), { ...(session.knobs as any), strategy: sname });
       const ledger = new Ledger(); const store = new ArtifactStore();
       r = await strat.run({ session, userText: text, knobs, store, ledger, router: new Router(knobs, ledger), maxSteps, onEvent });
-      if (!json) console.log(r.text);
+      if (!json) render!.line(r.text);
     }
     const rr: any = r;
     const exit = rr.fidelity === false ? 4 : r.text.startsWith("[model error]") ? 3 : r.text.startsWith("[stopped") ? 2 : 0;
     if (json) out({ type: "result", session: session.id, strategy: strat.name, text: r.text, steps: r.steps, usage: r.usage, cost_equiv: Math.round(r.costEquiv), gate: rr.gate ? { action: rr.gate.action, by: rr.gate.by, why: rr.gate.why } : undefined, fidelity: rr.fidelity, memory: rr.memory, exit });
     else {
-      if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) console.log(r.text);
-      console.log(`\n[${session.id} · ${strat.name} · ${r.steps} model calls · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}${rr.gate ? ` · ${rr.gate.action}` : ""}]`);
+      if (r.text.startsWith("[model error]") || r.text.startsWith("[stopped")) render!.line(r.text);
+      render!.turnEnd(`\n[${session.id} · ${strat.name} · ${r.steps} model calls · in ${r.usage.input} cached ${r.usage.cached} · out ${r.usage.output}${rr.gate ? ` · ${rr.gate.action}` : ""}]`);
+      render!.close();
     }
     process.exitCode = exit; return; }
   await chat(session);
