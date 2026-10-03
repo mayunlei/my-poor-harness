@@ -19,7 +19,7 @@ export interface Report {
   bySource: Record<string, Aggregate>;
   byKnobsHash: Record<string, Aggregate & { costPerStep: number }>;
   byCacheState: Record<string, { rows: number; uncachedShare: number }>;
-  compactions: { count: number; netTotal: number; medianNet: number; negative: number; effects: CompactionEffect[] };
+  compactions: { count: number; netTotal: number; medianNet: number; negative: number; recallCost: number; effects: CompactionEffect[] };
   judge: { decisions: number; compactRate: number; kHatMAE?: number };
   delegate: Record<string, { pass: number; fail: number; byTier: Record<string, { pass: number; fail: number }> }>;
   quality: { turns: number; successes: number; fails: number; unknown: number };
@@ -40,7 +40,29 @@ function agg(rows: LedgerRow[]): Aggregate {
   a.sessions = sess.size; a.turns = turns.size; return a;
 }
 
+/**
+ * What one recall actually costs, measured instead of assumed.
+ *
+ * A fold is priced against the recalls it causes, and that penalty was a flat 2,000
+ * cost-equivalent per recall. A recall is a whole extra model round trip: on the real
+ * session reviewed here those steps cost about 4,200 each (20k cached + 5k uncached +
+ * output), so the fold was being credited at roughly half price. The rows whose only
+ * tool calls were recalls are exactly the round trips the fold caused, so their median
+ * per-recall cost is the honest unit. Ledgers written before tool_kinds existed have
+ * no such rows and keep the old constant.
+ */
+export const RECALL_COST_FALLBACK = 2000;
+
+export function recallUnitCost(rows: LedgerRow[], fallback = RECALL_COST_FALLBACK): number {
+  const pure = rows
+    .filter((r) => r.tool_calls && r.tool_kinds?.length && r.tool_kinds.every((t) => t === "recall"))
+    .map((r) => (r.cost_equiv ?? costEquiv(r)) / r.tool_calls!)
+    .sort((a, b) => a - b);
+  return pure.length ? pure[Math.floor(pure.length / 2)] : fallback;
+}
+
 export function compactionEffects(rows: LedgerRow[], horizon = 40): CompactionEffect[] {
+  const recallCost = recallUnitCost(rows);
   const bySession = new Map<string, LedgerRow[]>();
   for (const r of rows) if (r.source === "proxy" || r.source === "harness") { if (!bySession.has(r.session)) bySession.set(r.session, []); bySession.get(r.session)!.push(r); }
   const out: CompactionEffect[] = [];
@@ -51,7 +73,7 @@ export function compactionEffects(rows: LedgerRow[], horizon = 40): CompactionEf
       const X = r.ctx_before - r.ctx_after; let saved = 0, n = 0, recalls = 0;
       for (let j = i + 1; j < rs.length && n < horizon; j++) { const s = rs[j]; if (s.input === undefined) continue; if (s.event === "compact") break; saved += X; n++; recalls += s.recall_count ?? 0; }
       const oneTime = (r.uncached ?? 0) + ((r.extra as any)?.summary_cost ?? 0);
-      const savedCost = saved * 0.1; const net = savedCost - oneTime - recalls * 2000;
+      const savedCost = saved * 0.1; const net = savedCost - oneTime - recalls * recallCost;
       out.push({ session, turn: r.turn, step: r.step, reason: (r.extra as any)?.compact_reason, followingSteps: n, savedTokens: saved, savedCostEquiv: savedCost, oneTimeCost: oneTime, net, recallsAfter: recalls });
     });
   }
@@ -79,7 +101,7 @@ export function buildReport(ledger: Ledger, opts: { since?: string } = {}): Repo
   return {
     window: { from: rows[0]?.ts, to: rows.at(-1)?.ts },
     total: agg(rows), bySource, byKnobsHash, byCacheState,
-    compactions: { count: effects.length, netTotal: nets.reduce((a, b) => a + b, 0), medianNet: nets.length ? nets[Math.floor(nets.length / 2)] : 0, negative: nets.filter((n) => n < 0).length, effects: effects.slice(-20) },
+    compactions: { count: effects.length, netTotal: nets.reduce((a, b) => a + b, 0), medianNet: nets.length ? nets[Math.floor(nets.length / 2)] : 0, negative: nets.filter((n) => n < 0).length, recallCost: recallUnitCost(rows), effects: effects.slice(-20) },
     judge: { decisions: judged.length, compactRate: judged.length ? judged.filter((r) => (r.extra as any).decision.action === "compact").length / judged.length : 0 },
     delegate,
     quality: { turns: outcomes.length, successes: outcomes.filter((r) => r.task_outcome === "success").length, fails: outcomes.filter((r) => r.task_outcome === "fail").length, unknown: outcomes.filter((r) => r.task_outcome === "unknown").length },
@@ -104,7 +126,8 @@ export function formatReport(r: Report): string {
     ` (${(r.total.credits / Math.max(1, r.total.input / 1e6)).toFixed(1)} per 1M input; the meter lags and the pool is shared, so trust the total, not a row)`);
   for (const [src, a] of Object.entries(r.bySource)) L.push(`  ${src}: ${a.rows} rows, cost ${f(a.cost)}, compactions ${a.compactions}, recalls ${a.recalls}`);
   L.push(`cache: ` + Object.entries(r.byCacheState).map(([k, v]) => `${k}=${v.rows} rows/${(100 * v.uncachedShare).toFixed(0)}% uncached`).join("  "));
-  L.push(`compactions: ${r.compactions.count}, net ${f(r.compactions.netTotal)} cost-equiv (median ${f(r.compactions.medianNet)}, ${r.compactions.negative} negative)`);
+  L.push(`compactions: ${r.compactions.count}, net ${f(r.compactions.netTotal)} cost-equiv (median ${f(r.compactions.medianNet)}, ${r.compactions.negative} negative)` +
+    `, each recall it caused priced at ${f(r.compactions.recallCost)}${r.compactions.recallCost === RECALL_COST_FALLBACK ? " (default: no measured recall steps yet)" : " (measured)"}`);
   L.push(`judge: ${r.judge.decisions} decisions, compact rate ${(100 * r.judge.compactRate).toFixed(0)}%`);
   for (const [cls, d] of Object.entries(r.delegate)) L.push(`delegate ${cls}: pass ${d.pass} fail ${d.fail} ` + Object.entries(d.byTier).map(([t, v]) => `${t}=${v.pass}/${v.pass + v.fail}`).join(" "));
   if (Object.keys(r.byKnobsHash).length > 1) { L.push("by knobs:"); for (const [h, a] of Object.entries(r.byKnobsHash)) L.push(`  ${h}: ${a.rows} rows, cost/step ${f(a.costPerStep)}, ctx ×${(a.ctxBefore / Math.max(1, a.ctxAfter)).toFixed(2)}`); }

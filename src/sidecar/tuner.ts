@@ -15,7 +15,8 @@ import { predictSteps, loadKHatTable, type KHatTable } from "../core/judge.js";
 import { buildReport } from "./metrics.js";
 
 export interface TunerState {
-  trials: Record<string, { knob: string; from: any; to: any; startedAt: string; baselineCostPerStep: number; baselineQuality: number; rowsBefore: number }>;
+  /** baselineQuality is null when the window had no pass/fail evidence at all */
+  trials: Record<string, { knob: string; from: any; to: any; startedAt: string; baselineCostPerStep: number; baselineQuality: number | null; rowsBefore: number }>;
   bandits: Record<string, Record<string, { alpha: number; beta: number }>>;
   frozen: Record<string, string>;   // knob -> until ISO
   lastRun?: string;
@@ -28,7 +29,19 @@ const CONTINUOUS: KnobName[] = ["turn_budget", "per_output_cap", "window", "reas
 const DISCRETE: KnobName[] = ["compact_on_turn_start"];
 
 function costPerStep(rows: LedgerRow[]): number { const rs = rows.filter((r) => r.input !== undefined); return rs.length ? rs.reduce((a, r) => a + (r.cost_equiv ?? 0), 0) / rs.length : 0; }
-function quality(rows: LedgerRow[]): number { const o = rows.filter((r) => r.task_outcome === "success" || r.task_outcome === "fail"); return o.length ? o.filter((r) => r.task_outcome === "success").length / o.length : 1; }
+/**
+ * Pass rate, or undefined when nothing in the window says pass or fail.
+ *
+ * This used to return 1 -- a perfect score -- for an empty window, which made the
+ * quality guard vacuous exactly when it mattered: only plan_verify and `compare` ever
+ * wrote task_outcome, so an ordinary react session produced no evidence and every
+ * cost-cutting trial looked free. No evidence now means the trial is rolled back
+ * rather than kept.
+ */
+function quality(rows: LedgerRow[]): number | undefined {
+  const o = rows.filter((r) => r.task_outcome === "success" || r.task_outcome === "fail");
+  return o.length ? o.filter((r) => r.task_outcome === "success").length / o.length : undefined;
+}
 function recallRate(rows: LedgerRow[]): number { const rs = rows.filter((r) => r.input !== undefined); return rs.length ? rs.reduce((a, r) => a + (r.recall_count ?? 0), 0) / rs.length : 0; }
 
 export interface TuneOptions { scope?: string; minRows?: number; dryRun?: boolean; now?: Date; rng?: () => number }
@@ -55,11 +68,18 @@ export function tune(ledger: Ledger, opts: TuneOptions = {}): string[] {
     const after = rows.slice(t.rowsBefore);
     if (after.filter((r) => r.input !== undefined).length < minRows / 2) continue;
     const cps = costPerStep(after), q = quality(after), rr = recallRate(after);
-    const worseQuality = q < t.baselineQuality * 0.95; const worseCost = cps > t.baselineCostPerStep * 0.98; const tooManyRecalls = rr > 0.15;
-    if (worseQuality || worseCost || tooManyRecalls) {
-      change({ [t.knob]: t.from } as any, `rollback trial ${id}: cost/step ${cps.toFixed(0)} vs ${t.baselineCostPerStep.toFixed(0)}, quality ${q.toFixed(2)} vs ${t.baselineQuality.toFixed(2)}, recall/step ${rr.toFixed(2)}`);
+    const base = t.baselineQuality ?? null;
+    const noEvidence = q === undefined || base === null;
+    const worseQuality = !noEvidence && q! < base! * 0.95;
+    const worseCost = cps > t.baselineCostPerStep * 0.98; const tooManyRecalls = rr > 0.15;
+    const qs = (x: number | null | undefined) => (x === undefined || x === null ? "no evidence" : x.toFixed(2));
+    if (worseQuality || worseCost || tooManyRecalls || noEvidence) {
+      const why = noEvidence && !worseQuality && !worseCost && !tooManyRecalls
+        ? `no pass/fail evidence in the window (quality ${qs(q)} vs ${qs(base)}), so the saving cannot be shown to be free`
+        : `cost/step ${cps.toFixed(0)} vs ${t.baselineCostPerStep.toFixed(0)}, quality ${qs(q)} vs ${qs(base)}, recall/step ${rr.toFixed(2)}`;
+      change({ [t.knob]: t.from } as any, `rollback trial ${id}: ${why}`);
       if (worseQuality) st.frozen[t.knob] = new Date(now.getTime() + 7 * 86400e3).toISOString();
-    } else log.push(`trial ${id} kept: cost/step ${cps.toFixed(0)} (was ${t.baselineCostPerStep.toFixed(0)}), quality ${q.toFixed(2)}`);
+    } else log.push(`trial ${id} kept: cost/step ${cps.toFixed(0)} (was ${t.baselineCostPerStep.toFixed(0)}), quality ${qs(q)}`);
     delete st.trials[id];
   }
 
@@ -74,7 +94,7 @@ export function tune(ledger: Ledger, opts: TuneOptions = {}): string[] {
       const to = Math.min(spec.max, Math.max(spec.min, cur + dir * step));
       if (to !== cur) {
         const id = `${knob}@${now.toISOString().slice(0, 16)}`;
-        st.trials[id] = { knob, from: cur, to, startedAt: now.toISOString(), baselineCostPerStep: costPerStep(recent), baselineQuality: quality(recent), rowsBefore: rows.length };
+        st.trials[id] = { knob, from: cur, to, startedAt: now.toISOString(), baselineCostPerStep: costPerStep(recent), baselineQuality: quality(recent) ?? null, rowsBefore: rows.length };
         change({ [knob]: to } as any, `trial ${id}: hill-climb ${dir > 0 ? "up" : "down"} (recall/step ${recallRate(recent).toFixed(2)})`);
       }
     }

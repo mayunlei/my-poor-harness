@@ -28,7 +28,9 @@ export interface LedgerRow {
   event?: "compact" | "keep" | "fork" | "shape" | "dedupe" | "wait" | "recall" | "poll_collapse" | "delegate" | "merge" | "knob_change" | "response"
         | "plan" | "step" | "verify" | "argue" | "replan" | "strategy"
         // multi-turn: the turn gate, memory recall/writes, and a broken user-words invariant
-        | "gate" | "memory" | "fidelity";
+        | "gate" | "memory" | "fidelity"
+        // one row per finished turn, carrying its outcome where the outcome is knowable
+        | "turn";
   tool_kind?: string;
   /** how many tool calls the model returned in this one response, and which: a step with
    *  tool_calls=4 did four tools' work in one round trip. Without these you cannot tell a

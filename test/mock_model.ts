@@ -4,7 +4,7 @@
  */
 import { createServer, type Server } from "node:http";
 
-export type Script = (body: any, n: number) => { output: any[]; usage?: any } | { status: number; body: string };
+export type Script = (body: any, n: number) => { output: any[]; usage?: any; headers?: Record<string, string> } | { status: number; body: string };
 
 export function startMock(script: Script): Promise<{ server: Server; url: string; requests: any[]; close: () => Promise<void> }> {
   const requests: any[] = []; let n = 0;
@@ -17,11 +17,13 @@ export function startMock(script: Script): Promise<{ server: Server; url: string
       const inputTok = JSON.stringify(body.input ?? []).length / 4;
       const usage = r.usage ?? { input_tokens: Math.round(inputTok), input_tokens_details: { cached_tokens: Math.round(inputTok * 0.8) }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 10 } };
       const response = { id: "resp_" + n, object: "response", output: r.output, usage };
+      // a reply may carry quota/billing headers, the way the Codex backend does
+      const extra = r.headers ?? {};
       if (body.stream) {
-        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.writeHead(200, { "content-type": "text/event-stream", ...extra });
         for (const o of r.output) if (o.type === "message") for (const c of o.content) res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: "response.output_text.delta", delta: c.text })}\n\n`);
         res.write(`event: response.completed\ndata: ${JSON.stringify({ type: "response.completed", response })}\n\n`); res.end();
-      } else { res.writeHead(200, { "content-type": "application/json" }); res.end(JSON.stringify(response)); }
+      } else { res.writeHead(200, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(response)); }
     });
   });
   return new Promise((resolve) => server.listen(0, "127.0.0.1", () => { const a = server.address() as any; resolve({ server, url: `http://127.0.0.1:${a.port}`, requests, close: () => new Promise((r) => { server.closeAllConnections(); server.close(() => r()); }) }); }));

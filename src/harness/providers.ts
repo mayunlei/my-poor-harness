@@ -5,6 +5,7 @@
  * reverse proxy or any OpenAI-compatible endpoint, see src/upstream).
  */
 import { upstreamFor, type Upstream } from "../upstream/index.js";
+import { parseMeter, type MeterSnapshot } from "../upstream/meter.js";
 import { ResponseCollector, SseLineBuffer } from "../upstream/sse.js";
 export interface ToolDef { name: string; description: string; parameters: any }
 export interface ModelRequest {
@@ -18,7 +19,11 @@ export interface ModelRequest {
   onText?: (delta: string) => void;
 }
 export interface Usage { input: number; cached: number; output: number; reasoning: number }
-export interface ModelResponse { output: any[]; usage: Usage; text: string; calls: { callId: string; name: string; args: any; raw: any }[]; raw?: any }
+export interface ModelResponse { output: any[]; usage: Usage; text: string; calls: { callId: string; name: string; args: any; raw: any }[]; raw?: any;
+  /** quota/credits headers of this response, when the upstream sends them (Codex). The
+   *  proxy has always recorded these; the harness did not, so every harness turn was
+   *  invisible to the dashboard's credits panel and to `mph price`. */
+  meter?: MeterSnapshot }
 export interface ModelClient { respond(req: ModelRequest): Promise<ModelResponse> }
 
 function callsOf(output: any[]): ModelResponse["calls"] {
@@ -91,7 +96,9 @@ export class OpenAIResponsesClient implements ModelClient {
     }
     const u = resp.usage ?? {};
     const output = resp.output ?? [];
-    return { output, text: textOf(output), calls: callsOf(output), raw: resp, usage: { input: u.input_tokens ?? 0, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.output_tokens_details?.reasoning_tokens ?? 0 } };
+    // the Codex transport copies the quota/credits headers onto the response it
+    // synthesizes for non-streaming callers, so one parse covers both paths
+    return { output, text: textOf(output), calls: callsOf(output), raw: resp, meter: parseMeter(r.headers), usage: { input: u.input_tokens ?? 0, cached: u.input_tokens_details?.cached_tokens ?? 0, output: u.output_tokens ?? 0, reasoning: u.output_tokens_details?.reasoning_tokens ?? 0 } };
   }
 }
 

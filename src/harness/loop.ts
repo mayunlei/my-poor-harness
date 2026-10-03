@@ -26,6 +26,7 @@ import { gitState } from "./dataset.js";
 import { Router, taskClassOf, type Tier } from "./router.js";
 import { saveSession, type SessionData, type TurnRecord } from "./session.js";
 import type { ModelResponse } from "./providers.js";
+import { meterDelta, type MeterSnapshot } from "../upstream/meter.js";
 
 export const FIXED_PROMPT = `You are a coding agent working in the user's workspace with a small set of tools.
 Rules that save tokens and time:
@@ -82,6 +83,31 @@ function digestItem(session: SessionData, foldedCount: number): any {
  * never interleave anyway -- their handlers run to completion inside one microtask -- so
  * the limit only really bounds run/wait/delegate, which is where it matters.
  */
+/**
+ * The quota/credits meter, per session, within this process. The proxy has always
+ * turned the absolute balance the backend reports into an observed drop; the harness
+ * recorded nothing at all, so every `mph run` and `mph chat` turn was invisible to
+ * the dashboard's credits panel and to `mph price` -- which is now most of the real
+ * use. One process per command means the first row of a run has no previous balance
+ * to subtract from; `credits_balance` is still recorded, and that is what the price
+ * fitter reads.
+ */
+const lastMeter = new Map<string, MeterSnapshot>();
+
+function meterFields(sessionId: string, meter?: MeterSnapshot): Record<string, unknown> {
+  if (!meter) return {};
+  const prev = lastMeter.get(sessionId);
+  lastMeter.set(sessionId, meter);
+  return {
+    credits_balance: meter.credits?.balance,
+    credits_spent: prev ? meterDelta(prev, meter).creditsSpent : undefined,
+    primary_used_percent: meter.primary?.usedPercent,
+    secondary_used_percent: meter.secondary?.usedPercent,
+    plan_type: meter.planType,
+    active_limit: meter.activeLimit,
+  };
+}
+
 async function mapLimit<T, R>(items: T[], limit: number, fn: (x: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
@@ -108,7 +134,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   if (tier === "T4") ctx.delegate = (task, inputs, acceptance) => delegateTask({ parent: session, task, inputs, acceptance, knobs, store, ledger, router, onEvent: o.onEvent });
 
   const multiTurn = o.multiTurn ?? (tier === "T4" && !o.instructions && !o.toolNames);
-  let finalText = ""; let steps = 0; let costEquiv = 0; let notes: string | undefined;
+  let finalText = ""; let steps = 0; let costEquiv = 0; let notes: string | undefined; let recalls = 0;
   const maxSteps = o.maxSteps ?? route.maxSteps;
   let items: any[]; let instructions: string; let toolDefs; let stepKnobs = knobs;
   let mt: MultiTurnState | undefined;
@@ -152,11 +178,17 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     }
     steps++; rec.steps = steps;
     rec.usage.input += resp.usage.input; rec.usage.cached += resp.usage.cached; rec.usage.output += resp.usage.output; rec.usage.reasoning += resp.usage.reasoning;
-    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, tool_calls: resp.calls.length, tool_kinds: resp.calls.length ? resp.calls.map((c) => c.name) : undefined, extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier, ...(mt && steps === 1 ? { segments: mt.segments, gate: mt.gate.action } : {}), ...o.tag } };
+    const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, tool_calls: resp.calls.length, tool_kinds: resp.calls.length ? resp.calls.map((c) => c.name) : undefined,
+      // recall_count was proxy-only, so `mph report` said "recalls 0" for a turn that
+      // made twenty of them -- and compactionEffects, which prices a fold against the
+      // recalls it causes, had nothing to subtract. The tuner's own "too many recalls,
+      // fold less" rule was dead for the same reason.
+      recall_count: resp.calls.filter((c) => c.name === "recall").length, ...meterFields(session.id, resp.meter), extra: { folded: rw.stats.folded, shaped: rw.stats.shaped, compact_reason: rw.stats.compactReason, tier, ...(mt && steps === 1 ? { segments: mt.segments, gate: mt.gate.action } : {}), ...o.tag } };
     ledger.append(row); costEquiv += resp.usage.cached * 0.1 + (resp.usage.input - resp.usage.cached) + resp.usage.output * 8;
     items.push(...resp.output);
     if (resp.calls.length === 0) { finalText = resp.text; break; }
     if (!o.quiet && resp.text) o.onEvent?.({ kind: "commentary", detail: resp.text.slice(0, 200) });
+    recalls += resp.calls.filter((c) => c.name === "recall").length;
     const inFlight = Math.min(Math.max(1, stepKnobs.tool_parallel), resp.calls.length);
     if (resp.calls.length > 1) {
       const counts = new Map<string, number>();
@@ -200,6 +232,14 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   if (mt) memoryOut = await finishMultiTurn({ o, mt, session, knobs, store, ledger, router, turnIdx, ctx, finalText, items, steps });
   saveSession(session);
   ledger.append({ source: "harness", session: session.id, turn: turnIdx, step: steps, event: "keep", note: `turn end: window ${session.window.length} items, digest ${countTokens(renderSummary(session.state, 0))} tok`, cost_equiv: costEquiv });
+  // One row per turn with its outcome. Only plan_verify and `compare` ever wrote
+  // task_outcome, so the default path produced no quality signal at all and the
+  // tuner's quality guard had nothing to guard with. A react turn has no acceptance
+  // command, so only the hard failures are claimed as failures; everything else is
+  // "unknown" rather than silently counted as a success.
+  const outcome = finalText.startsWith("[model error]") || finalText.startsWith("[stopped after") || (mt && !fidelityOk) ? "fail" as const : "unknown" as const;
+  ledger.append({ source: "harness", session: session.id, turn: turnIdx, step: steps, event: "turn", task_outcome: outcome, recall_count: recalls, cost_equiv: costEquiv,
+    note: `${steps} steps, ${recalls} recalls${outcome === "fail" ? `, failed: ${finalText.slice(0, 80)}` : ""}`, extra: { tier, strategy: o.tag?.strategy ?? "react" } });
   return { text: finalText, steps, usage: rec.usage, costEquiv, items, gate: mt?.gate, fidelity: mt ? fidelityOk : undefined, memory: memoryOut };
 }
 
