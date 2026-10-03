@@ -17,6 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import { mphEnv } from "../core/env.js";
 import { dirname, join } from "node:path";
 import { harnessHome } from "../core/knobs.js";
+import { UI_DEFAULTS, type UiSettings } from "../harness/render.js";
 
 export type Provider = "codex" | "openai_compatible";
 export type WireApi = "responses" | "chat";
@@ -34,6 +35,9 @@ export interface UpstreamConfigFile {
   small_model?: string;
   /** memory is global (shared by every project); recall=false stops injecting and searching it, write=false stops recording */
   memory?: { recall?: boolean; write?: boolean };
+  /** terminal output: status bar, folded tool calls, and the write discipline that
+   *  keeps Apple Terminal alive (see src/harness/render.ts) */
+  ui?: { status_bar?: boolean; fold_tools?: boolean; wrap?: boolean; flush_ms?: number; glyphs?: "ascii" | "unicode"; color?: boolean };
 }
 
 export interface ResolvedUpstream {
@@ -139,6 +143,31 @@ export function memorySettings(env: NodeJS.ProcessEnv = process.env): MemorySett
   return { recall: flag(mphEnv("MEMORY_RECALL", env), m.recall !== false), write: flag(mphEnv("MEMORY_WRITE", env), m.write !== false) };
 }
 
+/**
+ * Terminal output settings: config.json `ui`, each overridable with
+ * MPH_UI_STATUS_BAR / MPH_UI_FOLD_TOOLS / MPH_UI_WRAP / MPH_UI_FLUSH_MS /
+ * MPH_UI_GLYPHS / MPH_UI_COLOR. NO_COLOR and TERM=dumb are honoured.
+ */
+export function uiSettings(env: NodeJS.ProcessEnv = process.env): UiSettings {
+  const u = loadConfigFile().ui ?? {};
+  const dumb = env.TERM === "dumb";
+  const bool = (name: string, cfg: boolean | undefined, d: boolean) => {
+    const v = mphEnv(name, env);
+    if (v !== undefined) return !BOOL_OFF.includes(v.toLowerCase());
+    return cfg ?? d;
+  };
+  const flushEnv = Number(mphEnv("UI_FLUSH_MS", env));
+  const glyphs = (mphEnv("UI_GLYPHS", env) ?? u.glyphs) === "unicode" && !dumb ? "unicode" : "ascii";
+  return {
+    statusBar: bool("UI_STATUS_BAR", u.status_bar, !dumb),
+    foldTools: bool("UI_FOLD_TOOLS", u.fold_tools, true),
+    wrap: bool("UI_WRAP", u.wrap, true),
+    flushMs: Number.isFinite(flushEnv) && mphEnv("UI_FLUSH_MS", env) !== undefined ? Math.max(0, Math.min(500, flushEnv)) : Math.max(0, Math.min(500, u.flush_ms ?? UI_DEFAULTS.flushMs)),
+    glyphs,
+    color: bool("UI_COLOR", u.color, !env.NO_COLOR && !dumb),
+  };
+}
+
 /** every key `mph config k=v` and the vibe agent's settings_write accept, with what they take */
 export const CONFIG_KEYS: Record<string, string> = {
   provider: "codex | openai_compatible",
@@ -152,6 +181,12 @@ export const CONFIG_KEYS: Record<string, string> = {
   small_model: "model for the gate, memory extraction and answer cards (empty = auto)",
   memory_recall: "on | off — inject and search long-term memory",
   memory_write: "on | off — record new memory entries",
+  ui_status_bar: "on | off — bottom status line (task title, tokens, latency)",
+  ui_fold_tools: "on | off — collapse a step's tool calls into one line",
+  ui_wrap: "on | off — hard-wrap output at the window width (keep on: long lines crash Apple Terminal)",
+  ui_flush_ms: "0-500 — coalesce terminal writes into one syscall per N ms (0 = every write)",
+  ui_glyphs: "ascii | unicode — event tags; ascii avoids ambiguous-width glyphs",
+  ui_color: "on | off — reverse video on the status line",
 };
 
 const BOOL_ON = ["on", "true", "1", "yes"];
@@ -183,6 +218,15 @@ export function setConfigValues(entries: [string, string][]): { changed: Record<
       const on = BOOL_ON.includes(v.toLowerCase());
       if (!on && !BOOL_OFF.includes(v.toLowerCase())) throw new Error(`${k} must be on or off`);
       cfg.memory = { ...(cfg.memory ?? {}), [k === "memory_recall" ? "recall" : "write"]: on };
+    }
+    else if (k === "ui_glyphs") { if (v && v !== "ascii" && v !== "unicode") throw new Error("ui_glyphs must be ascii or unicode"); cfg.ui = { ...(cfg.ui ?? {}), glyphs: (v || undefined) as "ascii" | "unicode" | undefined }; }
+    else if (k === "ui_flush_ms") { const n = Number(v); if (!Number.isFinite(n) || n < 0 || n > 500) throw new Error("ui_flush_ms must be 0-500"); cfg.ui = { ...(cfg.ui ?? {}), flush_ms: n }; }
+    else if (k.startsWith("ui_")) {
+      const on = BOOL_ON.includes(v.toLowerCase());
+      if (!on && !BOOL_OFF.includes(v.toLowerCase())) throw new Error(`${k} must be on or off`);
+      const field = { ui_status_bar: "status_bar", ui_fold_tools: "fold_tools", ui_wrap: "wrap", ui_color: "color" }[k];
+      if (!field) throw new Error(`unknown config key ${k}; valid keys: ${Object.keys(CONFIG_KEYS).join(", ")}`);
+      cfg.ui = { ...(cfg.ui ?? {}), [field]: on };
     }
     else throw new Error(`unknown config key ${k}; valid keys: ${Object.keys(CONFIG_KEYS).join(", ")}`);
     note(k, v);

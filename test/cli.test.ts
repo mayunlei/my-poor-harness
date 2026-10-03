@@ -52,6 +52,36 @@ test("every ledger command is dispatched, not swallowed as a chat prompt", async
   }
 });
 
+test("common subcommands have focused help", async () => {
+  const chat = await mph(["chat", "--help"]);
+  assert.equal(chat.code, 0);
+  assert.match(chat.out, /interactive coding session/);
+  assert.match(chat.out, /--resume-last/);
+
+  const run = await mph(["run", "--help"]);
+  assert.equal(run.code, 0);
+  assert.match(run.out, /send one prompt and exit/);
+  assert.match(run.out, /--prompt-file/);
+
+  const model = await mph(["help", "model"]);
+  assert.equal(model.code, 0);
+  assert.match(model.out, /\/model list/);
+});
+
+test("unknown commands fail safely instead of starting a model-backed chat", async () => {
+  const { code, out, err } = await mph(["not-a-real-command"]);
+  assert.equal(code, 2);
+  assert.equal(out, "");
+  assert.match(err, /Unknown command: not-a-real-command/);
+  assert.match(err, /mph help/);
+});
+
+test("interactive chat exits cleanly on stdin EOF", async () => {
+  const { code, out } = await mph(["chat"]);
+  assert.equal(code, 0);
+  assert.match(out, /session s_/);
+});
+
 test("mph proxy --help and mph dash --once work without a model or a login", async () => {
   const p = await mph(["proxy", "--help"]);
   assert.equal(p.code, 0);

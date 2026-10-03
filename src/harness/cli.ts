@@ -60,6 +60,108 @@ settings
 const MODEL_TIERS = ["main", "mid", "small"] as const;
 type ModelTier = typeof MODEL_TIERS[number];
 
+const COMMAND_HELP: Record<string, string> = {
+  chat: `mph chat — interactive coding session
+
+Usage:
+  mph chat [--session ID] [--resume-last] [--cwd DIR] [--title TITLE]
+           [--model MODEL] [--profile NAME]
+
+Inside chat, type /help for commands. Useful commands include /model, /vibe,
+/fork, /switch, /memory, /compact, /stats, and /quit. With no command, ` +
+    `\`mph\` starts chat in the current directory.`,
+  run: `mph run — send one prompt and exit
+
+Usage:
+  mph run "TASK"
+  mph run - < prompt.txt
+  mph run --prompt-file FILE
+
+Options:
+  --session ID | --resume-last   continue an existing session
+  --cwd DIR                     run in another directory
+  --model MODEL                 choose the main model for this session
+  --profile NAME                use a built-in tuning profile
+  --strategy NAME               react or another listed strategy
+  --max-steps N                 stop after N model calls
+  --continue | --new            choose how the next turn starts
+  --json                        emit newline-delimited JSON events and result
+
+Exit codes: 0 done · 2 step limit · 3 model error · 4 user words lost`,
+  vibe: `mph vibe — configure mph by talking to it
+
+Usage:
+  mph vibe
+  mph vibe "turn memory off"
+
+The interactive form accepts natural-language configuration requests. It does
+not edit project files or run commands. Use /vibe off inside chat to leave it.`,
+  config: `mph config — inspect or change the upstream model settings
+
+Usage:
+  mph config
+  mph config provider=openai_compatible base_url=https://... api_key=...
+  mph config main_model=MODEL mid_model=MODEL small_model=MODEL
+
+Keys: provider, base_url, api_key, wire_api, codex_base_url, codex_models,
+main_model, mid_model, small_model, memory_recall, memory_write.
+Secrets are masked when displayed. Session-only model changes use /model in chat
+or --model with mph run/chat.`,
+  model: `Model selection has two scopes:
+  mph config main_model=MODEL       save a global default
+  mph chat --model MODEL             save it for this session
+  /model MODEL                       change it during an interactive session
+  /model list                        show main/mid/small and their sources
+  /model auto                        return a tier to the provider default`,
+  memory: `mph memory — manage long-term memory
+
+Usage:
+  mph memory list [--all] [--type TYPE]
+  mph memory search QUERY
+  mph memory get ID | pin ID | unpin ID | forget ID
+  mph memory export [FILE] | import FILE | gc`,
+  knobs: `mph knobs — inspect or change token-saving thresholds
+
+Usage:
+  mph knobs
+  mph knobs key=value ...
+  mph knobs --project DIR key=value ...
+  mph history                  show knob change history`,
+  save: `mph save — preserve a real session for later backtesting
+
+Usage:
+  mph save --last --note "what this session solved"
+  mph save SESSION_ID --note "what this session solved" [--dataset NAME] [--id ID]
+
+The note is required in practice because it explains why the case was saved.`,
+  dataset: `mph dataset — list or inspect saved backtesting cases
+
+Usage:
+  mph dataset list
+  mph dataset NAME
+  mph dataset show NAME/ID`,
+  sessions: `mph sessions — list saved sessions
+
+Usage:
+  mph sessions
+  mph sessions --prune`,
+  map: `mph map — run the same task against independent items
+
+Usage:
+  mph map --task "summarize {item}" --items a,b,c [--parallel N]
+  mph map --task "..." --items-file FILE [--parallel N]`,
+  compare: `mph compare — compare strategies on the same task set
+
+Usage:
+  mph compare --tasks FILE.jsonl [--strategies react,plan_verify]
+              [--max-steps N] [--copy] [--json OUT]`,
+};
+
+function helpFor(topic?: string): string {
+  if (!topic) return HELP;
+  return COMMAND_HELP[topic] ?? `No detailed help for \`${topic}\`. Try \`mph help\` to see all commands.`;
+}
+
 const VIBE_BANNER = `vibe on: tell me what you want the harness to do and I will read and change its own settings.
   e.g. "把记忆关掉" · "这个项目上下文给小一点" · "换成我自己的 qwen 端点" · "现在是什么配置"
   I can read the workspace and the settings; I cannot edit your files or run commands here. /vibe off to leave.`;
@@ -104,13 +206,27 @@ function printEvent(e: { kind: string; detail: string }) {
 
 async function chat(session: SessionData, startInVibe = false) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string) => new Promise<string>((r) => rl.question(q, r));
+  let inputClosed = false;
+  rl.once("close", () => { inputClosed = true; });
+  const ask = (q: string) => new Promise<string>((resolveAnswer) => {
+    let settled = false;
+    const finish = (answer: string) => {
+      if (settled) return;
+      settled = true;
+      rl.off("close", onClose);
+      resolveAnswer(answer);
+    };
+    const onClose = () => finish("");
+    rl.once("close", onClose);
+    rl.question(q, finish);
+  });
   console.log(`session ${session.id} (${session.title}) in ${session.cwd}. /help for commands.`);
   let pendingGate: GateAction | undefined;
   let vibe = startInVibe;
   if (vibe) console.log(VIBE_BANNER);
   for (;;) {
     const line = (await ask(`\n[${session.title}${vibe ? " · vibe" : ""}] you> `)).trim();
+    if (inputClosed) break;
     if (!line) continue;
     let text = line;
     if (line === "/vibe" || line.startsWith("/vibe ")) {
@@ -156,7 +272,7 @@ async function chat(session: SessionData, startInVibe = false) {
       }
       if (c === "compact") { session.window = session.window.slice(-2); saveSession(session); console.log("window trimmed; next turn starts from digest"); continue; }
       if (c === "stats") { const t = session.turns; const u = t.reduce((a, x) => ({ input: a.input + x.usage.input, cached: a.cached + x.usage.cached, output: a.output + x.usage.output }), { input: 0, cached: 0, output: 0 }); console.log(`turns=${t.length} steps=${t.reduce((a, x) => a + x.steps, 0)} input=${u.input} cached=${u.cached} (${(100 * u.cached / Math.max(1, u.input)).toFixed(0)}%) output=${u.output} window=${session.window.length} files=${session.state.filesTouched.length}`); continue; }
-      console.log("unknown command"); continue;
+      console.log(`unknown command /${c}; type /help to see available commands`); continue;
     }
     const knobs = resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any);
     const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
@@ -176,9 +292,24 @@ async function chat(session: SessionData, startInVibe = false) {
   rl.close();
 }
 
+const KNOWN_COMMANDS = new Set([
+  "chat", "run", "vibe", "map", "compare", "strategies", "sessions", "fork", "merge", "discard",
+  "save", "dataset", "datasets", "proxy", "dash", "dashboard", "report", "tune", "watch", "history",
+  "price", "price-probe", "knobs", "memory", "skill", "skills", "login", "logout", "whoami", "config",
+]);
+
 async function main() {
   const cwd = resolve(opt("--cwd", process.cwd())!);
-  if (cmd === "help" || cmd === "--help" || cmd === "-h") { console.log(HELP); return; }
+  if (cmd === "help") { console.log(helpFor(args[1])); return; }
+  if (cmd === "--help" || cmd === "-h") { console.log(HELP); return; }
+
+  // A typo must not silently start a model-backed chat (and potentially spend tokens).
+  if (!KNOWN_COMMANDS.has(cmd)) {
+    console.error(`Unknown command: ${cmd}`);
+    console.error("Run `mph help` to see available commands, or just `mph` to start chat.");
+    process.exitCode = 2;
+    return;
+  }
 
   // The proxy, the dashboard and the ledger commands used to be their own binaries.
   // They are imported on demand so `mph chat` does not pay for a dashboard it is not
@@ -187,8 +318,9 @@ async function main() {
   if (cmd === "dash" || cmd === "dashboard") { await (await import("../dashboard/cli.js")).dashMain(args.slice(1)); return; }
   if ((LEDGER_COMMANDS as readonly string[]).includes(cmd)) { await (await import("../sidecar/cli.js")).ledgerMain(cmd as any, args.slice(1)); return; }
 
-  // the commands above answer their own --help; for the rest there is one help
-  if (flag("--help") || flag("-h")) { console.log(HELP); return; }
+  // The commands above answer their own --help; the remaining commands have local
+  // usage text instead of dumping the entire command catalog.
+  if (flag("--help") || flag("-h")) { console.log(helpFor(cmd)); return; }
 
   await initTokenizer();
   if (cmd === "login") { await runLogin(); return; }

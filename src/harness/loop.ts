@@ -27,6 +27,7 @@ import { Router, taskClassOf, type Tier } from "./router.js";
 import { saveSession, type SessionData, type TurnRecord } from "./session.js";
 import type { ModelResponse } from "./providers.js";
 import { meterDelta, type MeterSnapshot } from "../upstream/meter.js";
+import type { TurnStatus } from "./render.js";
 
 export const FIXED_PROMPT = `You are a coding agent working in the user's workspace with a small set of tools.
 Rules that save tokens and time:
@@ -39,9 +40,24 @@ Rules that save tokens and time:
 - Before giving the final answer, call state_update(notes) with durable notes: decisions, facts with artifact ids, open questions, next step (under 300 tokens).
 - Final answers: lead with the outcome, name files changed, say what was verified and what was not.`;
 
+/**
+ * What the loop tells the terminal while a turn is in flight, so the status bar can
+ * show the task, the step, the token spend and the last model latency without the
+ * loop knowing anything about terminals. The Renderer implements it; tests and the
+ * non-interactive paths pass nothing.
+ */
+export interface TurnUi {
+  turnStart(s: Partial<TurnStatus>): void;
+  stepStart(step: number): void;
+  status(s: Partial<TurnStatus>): void;
+  turnEnd(summary?: string): void;
+}
+
 export interface TurnOptions {
   session: SessionData; userText: string; knobs?: Knobs; store?: ArtifactStore; ledger?: Ledger; router?: Router;
   tier?: Tier; maxSteps?: number; onText?: (t: string) => void; onEvent?: (e: { kind: string; detail: string }) => void; quiet?: boolean;
+  /** live status for the interactive CLI (title, step, tokens, latency) */
+  ui?: Partial<TurnUi>;
   /** replace the fixed prompt (planner and verifier agents have their own) */
   instructions?: string;
   /** restrict the tool set, e.g. a planner that must not edit, a verifier that must not fix */
@@ -67,6 +83,17 @@ export function openMemory(): MemoryStore | null {
   if (sharedMemory !== undefined) return sharedMemory;
   try { sharedMemory = new MemoryStore(); } catch { sharedMemory = null; }
   return sharedMemory;
+}
+
+/**
+ * What to call this turn in the status bar. An explicit `--title` or a forked
+ * session's name wins; otherwise the session is still named after its own id, and
+ * the user's first line is a better description of the task than "s_b305a237".
+ */
+export function turnTitle(session: SessionData, userText: string): string {
+  if (session.title && session.title !== session.id) return session.title;
+  const first = userText.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("/"));
+  return (first ?? session.title).replace(/\s+/g, " ").slice(0, 80);
 }
 
 function digestItem(session: SessionData, foldedCount: number): any {
@@ -133,6 +160,9 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   const ctx: ToolContext = { cwd: session.cwd, knobs, store, sessionId: session.id, filesTouched: new Set(session.state.filesTouched), readCache: new Map(), cmdCache: new Map(), jobs: new Map(), onEvent: o.onEvent };
   if (tier === "T4") ctx.delegate = (task, inputs, acceptance) => delegateTask({ parent: session, task, inputs, acceptance, knobs, store, ledger, router, onEvent: o.onEvent });
 
+  const ui = o.ui;
+  ui?.turnStart?.({ title: turnTitle(session, o.userText), model: route.model, maxSteps: o.maxSteps ?? route.maxSteps });
+
   const multiTurn = o.multiTurn ?? (tier === "T4" && !o.instructions && !o.toolNames);
   let finalText = ""; let steps = 0; let costEquiv = 0; let notes: string | undefined; let recalls = 0;
   const maxSteps = o.maxSteps ?? route.maxSteps;
@@ -141,6 +171,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
 
   if (multiTurn) {
     rec.git = gitState(session.cwd);
+    ui?.status?.({ phase: "gate" });
     mt = await prepareMultiTurn({ o, session, knobs, store, ledger, router, turnIdx, ctx });
     items = mt.items; instructions = mt.instructions; toolDefs = MULTI_TURN_TOOL_DEFS;
     // the gate already decided what to carry; inside the turn only the budget fold applies
@@ -161,6 +192,8 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   let fidelityOk = true;
 
   while (steps < maxSteps) {
+    ui?.stepStart?.(steps + 1);
+    const askedAt = Date.now();
     const rw = rewrite(items, { knobs: stepKnobs, store, state: rwState, now: Date.now(), settingsHash: route.model + route.effort });
     if (mt) {
       const f = checkUserFidelity(rw.input, mt.userEntries);
@@ -178,6 +211,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
     }
     steps++; rec.steps = steps;
     rec.usage.input += resp.usage.input; rec.usage.cached += resp.usage.cached; rec.usage.output += resp.usage.output; rec.usage.reasoning += resp.usage.reasoning;
+    ui?.status?.({ ...rec.usage, lastLatencyMs: Date.now() - askedAt, phase: resp.calls.length ? "tools" : "answering" });
     const row = { source: "harness" as const, session: session.id, turn: turnIdx, step: steps, model: route.model, input: resp.usage.input, cached: resp.usage.cached, uncached: resp.usage.input - resp.usage.cached, output: resp.usage.output, reasoning: resp.usage.reasoning, ctx_before: rw.stats.tokensBefore, ctx_after: rw.stats.tokensAfter, event: rw.stats.compacted ? "compact" as const : "response" as const, cache_state: rw.stats.cacheState, tool_kind: resp.calls[0]?.name, tool_calls: resp.calls.length, tool_kinds: resp.calls.length ? resp.calls.map((c) => c.name) : undefined,
       // recall_count was proxy-only, so `mph report` said "recalls 0" for a turn that
       // made twenty of them -- and compactionEffects, which prices a fold against the
@@ -207,6 +241,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   if (!finalText && steps >= maxSteps) finalText = `[stopped after ${maxSteps} steps]`;
 
   // --- turn end: update state, fold window, persist -----------------------------
+  ui?.status?.({ phase: "wrap-up" });
   const parsed = parseInput(items);
   const turnSummary = buildSummary(parsed, { ...session.state, notes: notes ?? session.state.notes });
   const norm = (f: string) => (f.startsWith("/") ? f : join(session.cwd, f));
