@@ -29,11 +29,27 @@ function newestSource(dir) {
   return newest;
 }
 
+/**
+ * Node ignores HTTP_PROXY / HTTPS_PROXY for fetch unless it is told to use them, and
+ * every request mph makes goes through fetch. On a network where chatgpt.com resolves
+ * to a poisoned address, the direct route simply times out
+ * (UND_ERR_CONNECT_TIMEOUT) while curl and the Codex CLI -- which honour the variables
+ * -- work fine. So: if the environment names a proxy, pass it on. NODE_USE_ENV_PROXY
+ * already set, either way, wins; NO_PROXY is honoured by node, so mph's own localhost
+ * traffic is unaffected. Needs node >= 24, which is the floor anyway.
+ */
+export const PROXY_VARS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"];
+
+export function proxyEnv(env = process.env) {
+  if (env.NODE_USE_ENV_PROXY !== undefined) return {};
+  return PROXY_VARS.some((k) => env[k]) ? { NODE_USE_ENV_PROXY: "1" } : {};
+}
+
 export function launch(entry) {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const compiled = join(root, "dist", entry.replace(/^src\//, "").replace(/\.ts$/, ".js"));
   const args = process.argv.slice(2);
-  const opts = { stdio: "inherit", cwd: process.cwd(), env: { ...process.env, NODE_PATH: join(root, "node_modules") } };
+  const opts = { stdio: "inherit", cwd: process.cwd(), env: { ...process.env, NODE_PATH: join(root, "node_modules"), ...proxyEnv() } };
 
   let useCompiled = existsSync(compiled) && process.env.MPH_FROM_SOURCE !== "1";
   if (useCompiled) {

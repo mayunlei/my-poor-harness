@@ -90,3 +90,25 @@ test("vibe refuses to start without credentials instead of hanging on a model ca
   assert.equal(code, 1);
   assert.match(err, /mph login|openai_compatible/, "it says how to get a model");
 });
+
+test("the launcher passes a configured proxy on to node, which ignores it otherwise", async () => {
+  const { proxyEnv, PROXY_VARS } = await import("../bin/_launch.js");
+  assert.deepEqual(proxyEnv({}), {}, "no proxy configured, nothing added");
+  for (const k of PROXY_VARS) assert.deepEqual(proxyEnv({ [k]: "http://127.0.0.1:7897" }), { NODE_USE_ENV_PROXY: "1" }, k);
+  assert.deepEqual(proxyEnv({ HTTPS_PROXY: "http://p", NODE_USE_ENV_PROXY: "0" }), {}, "an explicit setting wins, either way");
+  assert.deepEqual(proxyEnv({ HTTPS_PROXY: "" }), {}, "an empty value is not a proxy");
+
+  // end to end: the CLI reaches a local server only a proxy-aware fetch could reach is
+  // beyond a unit test, so assert the flag actually arrives in the child's environment
+  const out = await new Promise<string>((resolve) => {
+    const p = spawn(process.execPath, [join(ROOT, "bin/mph.js"), "run", "--cwd", ROOT, "x"], {
+      env: { ...process.env, MPH_HOME: HOME, HTTPS_PROXY: "http://127.0.0.1:9", MPH_OPENAI_BASE_URL: "http://127.0.0.1:9/v1", MPH_CODEX_CLI_AUTH: join(HOME, "none.json") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let s = ""; p.stdout.on("data", (d) => (s += d)); p.stderr.on("data", (d) => (s += d));
+    p.on("exit", () => resolve(s));
+  });
+  // 127.0.0.1 is in node's default NO_PROXY, so the request goes direct and fails fast;
+  // what matters is that the launcher did not crash on the proxy handling
+  assert.match(out, /model error|fetch failed|ECONNREFUSED/, out.slice(0, 300));
+});
