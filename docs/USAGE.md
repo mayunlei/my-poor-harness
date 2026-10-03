@@ -262,13 +262,58 @@ agent to have you run `mph config api_key=...` in your own shell instead.
 ## 4. Sidecar
 
 ```bash
-npx tsx src/sidecar/cli.ts report            # cost, credits spent and left, cache, compaction net effect, judge, delegate pass rates
-npx tsx src/sidecar/cli.ts tune --dry-run    # what it would change and why
-npx tsx src/sidecar/cli.ts watch --every 900 # report + tune every 15 min
-npx tsx src/sidecar/cli.ts history           # every knob change with who/why/scope
+mph report            # cost, credits spent and left, cache, tool batching, compaction net effect, judge, pass rates
+mph tune --dry-run    # what it would change and why
+mph watch --every 900 # report + tune every 15 min
+mph history           # every knob change with who/why/scope
 ```
 
 Knobs live in `~/.mph/knobs.json` with layers `global → profile → project → session → turn`; all have bounds and steps (`src/core/knobs.ts`). Cache-breaking knobs (`main_model`, `effort_*`, `prefix_trim`, `reasoning_keep_last`) are only applied at fold events or turn boundaries.
+
+### What the harness records, and why it matters
+
+The sidecar, the dashboard and the tuner are only as honest as the ledger. Reviewing
+`~/.mph` after real use showed a turn with 71 model calls and twenty `recall()`
+expansions that `mph report` summarized as **"recalls 0"** — `recall_count`, the credits
+meter and `task_outcome` were all written by the proxy and by nothing else. Three things
+downstream were reading those fields:
+
+| field | who reads it | what it did while unwritten |
+|---|---|---|
+| `recall_count` | `compactionEffects` prices a fold against the recalls it caused; the tuner rolls a trial back above 0.15 recalls/step and reverses its hill-climb above 0.1 | the penalty was always zero, so folds looked free and the tuner kept folding harder — a loop pointing the wrong way |
+| `credits_balance` / `credits_spent` | the dashboard's money panel, `mph price` | no harness turn cost anything, which is now most of the real use |
+| `task_outcome` | the tuner's quality guard | an empty window scored a perfect `1.0`, so every cost cut passed its own exam |
+
+All three are written per response now, plus one `event: "turn"` row carrying the
+outcome. A react turn has no acceptance command, so only hard failures (a model error,
+the step limit, a user-words violation) are claimed as `fail`; everything else is
+`unknown` rather than quietly counted as a win. The guard **fails closed**: a trial with
+no pass/fail evidence in its window is rolled back, not kept.
+
+A recall is also priced from measurement rather than a constant. The flat 2,000
+cost-equivalent per recall was about half of what one really costs (a whole extra round
+trip: ~20k cached + ~5k uncached + output on the session reviewed), so `mph report` now
+shows the unit it used and where it came from:
+
+```
+compactions: 9, net 1,215,752 cost-equiv (median 100,318, 2 negative), each recall it caused priced at 4,210 (measured)
+```
+
+Two behavioural consequences of the same review:
+
+- `recall_keep_last` (default 2) keeps the newest `recall()` outputs out of the next
+  fold. Stubbing what the model just asked to see back is a fold → recall → fold loop,
+  and each lap costs a model round trip.
+- `mph sessions --prune` deletes sessions that never ran a turn, and a one-shot `mph run`
+  no longer writes a session file before it has anything to put in it. 127 files had
+  accumulated for about eleven real conversations.
+
+Memory extraction got the same treatment: every item must now say, in `durable`, why it
+will still matter in a different session next week, and items without a reason are
+dropped and counted in the ledger's memory row. The five memories in the real store were
+"the build succeeded", "the installed version is 0.5.0" and the like — all `use_count=0`,
+none ever recalled. The prompt now names those as non-examples, and a title that contains
+an existing one updates it instead of sitting beside it.
 
 ## 5. Replay benchmark (zero model cost)
 

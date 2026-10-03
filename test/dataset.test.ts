@@ -34,7 +34,7 @@ function mainMock(answers: string[]) {
   let n = 0;
   return startMock((body) => {
     const ins = String(body.instructions ?? "");
-    if (ins.startsWith("You maintain the long-term memory")) return { output: [msg('{"items":[{"op":"new","type":"decision","title":"x stays an int","body":"user wants ints"}]}')] };
+    if (ins.startsWith("You maintain the long-term memory")) return { output: [msg('{"items":[{"op":"new","type":"decision","title":"x stays an int","body":"user wants ints","durable":"the user will keep expecting ints"}]}')] };
     if (!ins.startsWith("You are a coding agent in a long-running conversation")) return { output: [msg("{}")] };
     const i = n++;
     if (i === 0) return { output: [call("edit", { path: "a.py", old: "x = 1", new: "x = 2" }, "c1")] };
@@ -42,9 +42,12 @@ function mainMock(answers: string[]) {
   });
 }
 
-test("save: transcript, per-turn context, ledger, memories, git state and the note go into the dataset", async () => {
+test("save: transcript, per-turn context, ledger, memories, git state and the note go into the dataset", async (t) => {
   const ws = gitRepo();
   const mock = await mainMock(["Done: x is now 2 in a.py.", "It is 2."]);
+  // a failed assertion used to skip the close at the end of the body, leaving the mock
+  // server listening: the file then never exited and the whole suite hung on it
+  t.after(() => mock.close());
   process.env.MPH_OPENAI_BASE_URL = mock.url + "/v1";
   const knobs = resolveKnobs({ main_model: "mock-main", small_model: "mock-small" });
   const ledger = new Ledger(join(HOME, "ledger.jsonl"));
@@ -86,7 +89,7 @@ test("save: transcript, per-turn context, ledger, memories, git state and the no
   assert.throws(() => saveToDataset(s, { note, dataset: "regress", store, ledger, memory, now: new Date("2026-10-02T21:30:00Z") }), /already has a case/);
   const r2 = saveToDataset(s, { note, dataset: "regress", id: "second copy", store, ledger, memory });
   assert.equal(r2.id, "second-copy"); assert.equal(readIndex("regress").length, 2);
-  memory.close(); await mock.close();
+  memory.close();
 });
 
 test("mph save --last --note and mph dataset show work from the command line", async () => {

@@ -387,6 +387,7 @@ async function finishMultiTurn(a: MultiTurnArgs & { mt: MultiTurnState; finalTex
   appendAnswer(session.id, { turn: turnIdx, artifact: art?.id, text: finalText, card: card ?? "", filesChanged, status: finalText.startsWith("[model error]") ? "error" : finalText.startsWith("[stopped") ? "stopped" : "done" });
 
   const written: string[] = [...(ctx.remembered ?? [])];
+  let dropped = 0;
   const memory = mt.memory;
   if (memory && mt.settings.write) {
     for (const m of ruleExtract(o.userText)) written.push(addUnlessDuplicate(memory, { ...m, project: mt.project, source: { session: session.id, turn: turnIdx, by: "user" } }).entry.id);
@@ -398,11 +399,13 @@ async function finishMultiTurn(a: MultiTurnArgs & { mt: MultiTurnState; finalTex
         const r = await modelExtract(router.client(small.model), small.model, { userText: o.userText, answer: finalText, toolSummary, existing });
         ledger.append({ source: "harness", session: session.id, turn: turnIdx, step: steps, event: "response", model: small.model, input: r.usage.input, cached: r.usage.cached, uncached: r.usage.input - r.usage.cached, output: r.usage.output, note: "memory extract", extra: { tier: "T2" } });
         written.push(...applyExtracted(memory, r.items, { session: session.id, turn: turnIdx, project: mt.project, cwd: session.cwd }));
+        dropped += r.dropped;
+        if (r.dropped) o.onEvent?.({ kind: "memory_miss", detail: `${r.dropped} extracted memor${r.dropped === 1 ? "y" : "ies"} dropped: no reason given to still matter later` });
       } catch (e: any) { o.onEvent?.({ kind: "warn", detail: `memory extraction failed: ${e?.message ?? e}` }); }
     }
   }
   const recalled = [...(ctx.memoryShown ?? [])];
   const misses = [...(ctx.memoryMisses ?? [])];
-  ledger.append({ source: "harness", session: session.id, turn: turnIdx, step: steps, event: "memory", note: `shown ${recalled.length}, used ${ctx.memoryUsed?.size ?? 0}, missed ${misses.length}, written ${new Set(written).size}`, extra: { shown: recalled, used: [...(ctx.memoryUsed ?? [])], misses, written: [...new Set(written)], skills_loaded: ctx.skillsLoaded ?? [], recall_on: mt.settings.recall, write_on: mt.settings.write } });
+  ledger.append({ source: "harness", session: session.id, turn: turnIdx, step: steps, event: "memory", note: `shown ${recalled.length}, used ${ctx.memoryUsed?.size ?? 0}, missed ${misses.length}, written ${new Set(written).size}, dropped ${dropped}`, extra: { shown: recalled, used: [...(ctx.memoryUsed ?? [])], misses, written: [...new Set(written)], skills_loaded: ctx.skillsLoaded ?? [], recall_on: mt.settings.recall, write_on: mt.settings.write } });
   return { recalled, written: [...new Set(written)], misses };
 }

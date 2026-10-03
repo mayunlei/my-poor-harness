@@ -3,7 +3,7 @@
  * fork() starts a branch from the current state; merge() brings a branch's state
  * delta back as a merged block (a few hundred tokens), never its token history.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { harnessHome } from "../core/knobs.js";
 import { newRewriteState, type RewriteState } from "../core/rewrite.js";
@@ -97,3 +97,23 @@ export function mergeSession(branch: SessionData, main: SessionData, maxTokens =
 }
 
 export function discardSession(s: SessionData): void { s.status = "discarded"; saveSession(s); }
+
+/**
+ * Sessions that never ran a turn are litter: a command that errored, was interrupted,
+ * or only printed something. 127 session files had piled up here for about eleven real
+ * conversations. Also removes the transcript of a session being deleted, so the two
+ * stores do not drift.
+ */
+export function pruneEmptySessions(): { removed: string[]; kept: number } {
+  const removed: string[] = []; let kept = 0;
+  for (const s of listSessions()) {
+    if (s.turns.length === 0 && s.status !== "discarded") {
+      try {
+        rmSync(pathOf(s.id));
+        rmSync(join(harnessHome(), "harness", "transcripts", s.id + ".jsonl"), { force: true });
+        removed.push(s.id);
+      } catch { kept++; }
+    } else kept++;
+  }
+  return { removed, kept };
+}

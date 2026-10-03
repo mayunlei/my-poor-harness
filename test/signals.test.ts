@@ -11,7 +11,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startMock, msg, call } from "./mock_model.js";
@@ -21,7 +21,7 @@ process.env.MPH_HOME = HOME;
 for (const k of Object.keys(process.env)) if (k.startsWith("MPH_") && k !== "MPH_HOME") delete process.env[k];
 
 const { runTurn } = await import("../src/harness/loop.js");
-const { newSession, saveSession } = await import("../src/harness/session.js");
+const { newSession, saveSession, pruneEmptySessions } = await import("../src/harness/session.js");
 const { Router } = await import("../src/harness/router.js");
 const { Ledger } = await import("../src/core/ledger.js");
 const { ArtifactStore } = await import("../src/core/artifacts.js");
@@ -29,6 +29,8 @@ const { resolveKnobs } = await import("../src/core/knobs.js");
 const { rewrite, newRewriteState } = await import("../src/core/rewrite.js");
 const { buildReport, formatReport, compactionEffects, recallUnitCost, RECALL_COST_FALLBACK } = await import("../src/sidecar/metrics.js");
 const { tune, saveTunerState } = await import("../src/sidecar/tuner.js");
+const { durableOnly, findDuplicate } = await import("../src/memory/write.js");
+const { MemoryStore } = await import("../src/memory/store.js");
 
 const store = new ArtifactStore(join(HOME, "art"));
 
@@ -141,6 +143,40 @@ test("the tuner rolls a trial back when nothing says whether quality held", () =
   assert.ok(rollback, log.join("\n"));
   assert.match(rollback!, /no pass\/fail evidence/);
   assert.match(rollback!, /"turn_budget":60000/, "the knob goes back to where it was");
+});
+
+test("an extracted memory without a reason to last is dropped; a near-duplicate updates instead of piling up", () => {
+  const { kept, dropped } = durableOnly([
+    { op: "new", type: "fact", title: "the build succeeded" },
+    { op: "new", type: "fact", title: "installed version is 0.5.0", durable: "  " },
+    { op: "new", type: "decision", title: "x stays an int", durable: "the user will keep expecting ints" },
+    { op: "new", type: "nonsense", title: "bad type", durable: "whatever" },
+  ]);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0].title, "x stays an int");
+  assert.equal(dropped.length, 3);
+
+  const mem = new MemoryStore(join(HOME, "mem.db"));
+  try {
+    const base = { type: "fact" as const, project: "/p", source: { session: "s", turn: 0, by: "model" as const } };
+    const first = mem.add({ ...base, title: "my-poor-harness installed globally", body: "" });
+    const dup = findDuplicate(mem, { type: "fact", title: "my-poor-harness installed globally with npm" });
+    assert.equal(dup?.id, first.id, "one title containing the other is the same memory");
+    assert.equal(findDuplicate(mem, { type: "fact", title: "the gate uses the small model" }), undefined);
+    assert.equal(findDuplicate(mem, { type: "decision", title: "my-poor-harness installed globally" }), undefined, "a different type is a different memory");
+  } finally { mem.close(); }
+});
+
+test("sessions that never ran a turn are not left behind, and prune clears the old ones", () => {
+  const ws = mkdtempSync(join(tmpdir(), "mph-sig-prune-"));
+  const empty = newSession(ws, "never-ran"); saveSession(empty);
+  const used = newSession(ws, "ran-once"); used.turns.push({ idx: 0, user: "hi", steps: 1, startedAt: new Date().toISOString(), usage: { input: 1, cached: 0, output: 1, reasoning: 0 } } as any); saveSession(used);
+  const { removed, kept } = pruneEmptySessions();
+  assert.ok(removed.includes(empty.id), `removed ${removed.join(",")}`);
+  assert.ok(!removed.includes(used.id));
+  assert.ok(kept >= 1);
+  assert.ok(!existsSync(join(HOME, "harness", "sessions", empty.id + ".json")));
+  assert.ok(existsSync(join(HOME, "harness", "sessions", used.id + ".json")));
 });
 
 test("the fold leaves the newest recall outputs alone, so it cannot undo what it just asked for", () => {

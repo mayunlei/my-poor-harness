@@ -5,7 +5,7 @@ import { saveToDataset, listDatasets, readIndex, readCase, datasetsDir } from ".
 import { runTurn } from "./loop.js";
 import { strategyFor, STRATEGIES } from "./strategies/index.js";
 import { compareStrategies, formatCompare, saveCompare, loadTasks } from "./compare.js";
-import { newSession, saveSession, loadSession, listSessions, findSession, forkSession, mergeSession, discardSession, type SessionData } from "./session.js";
+import { newSession, saveSession, loadSession, listSessions, findSession, forkSession, mergeSession, discardSession, pruneEmptySessions, type SessionData } from "./session.js";
 import { knobsFor, applyKnobChange, resolveKnobs, KNOB_SPECS, PROFILES } from "../core/knobs.js";
 import { ArtifactStore } from "../core/artifacts.js";
 import { Ledger } from "../core/ledger.js";
@@ -34,7 +34,7 @@ conversation
   vibe ["what you want"]                       configure the harness by talking to it; /vibe inside chat
   map --task "..." (--items a,b,c | --items-file f) [--parallel 3]         map-reduce, fresh context per item
   compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]
-  strategies | sessions | fork <id> <name> | merge <branch> <main> | discard <id>
+  strategies | sessions [--prune] | fork <id> <name> | merge <branch> <main> | discard <id>
 
 datasets (real sessions kept for backtesting a later harness)
   save [<session> | --last] --note "一句话：这个会话用来解决什么问题" [--dataset name] [--id name]
@@ -211,7 +211,11 @@ async function main() {
     for (const r of rows) console.log(`${r.id.padEnd(34)} ${String(r.turns).padStart(3)} turns  ${r.note}`);
     return;
   }
-  if (cmd === "sessions") { for (const s of listSessions()) console.log(`${s.id}  ${s.status.padEnd(9)} turns=${String(s.turns.length).padStart(3)}  ${s.cwd}  ${s.title}`); return; }
+  if (cmd === "sessions") {
+    if (flag("--prune")) { const { removed, kept } = pruneEmptySessions(); console.log(`removed ${removed.length} session(s) that never ran a turn, kept ${kept}`); return; }
+    for (const s of listSessions()) console.log(`${s.id}  ${s.status.padEnd(9)} turns=${String(s.turns.length).padStart(3)}  ${s.cwd}  ${s.title}`);
+    return;
+  }
   if (cmd === "fork") { const p = findSession(args[1]); if (!p) throw new Error("no such session"); const c = forkSession(p, args[2] ?? "fork"); console.log(c.id); return; }
   if (cmd === "merge") { const b = findSession(args[1]), m = findSession(args[2]); if (!b || !m) throw new Error("session not found"); console.log(mergeSession(b, m).text); return; }
   if (cmd === "discard") { const s = findSession(args[1]); if (!s) throw new Error("no such session"); discardSession(s); return; }
@@ -247,7 +251,7 @@ async function main() {
       process.exitCode = 1; return;
     }
     let s2 = opt("--session") ? findSession(opt("--session")!) : undefined;
-    if (!s2) { s2 = newSession(cwd, "vibe"); saveSession(s2); }
+    if (!s2) { s2 = newSession(cwd, "vibe"); if (!text) saveSession(s2); }   // only the interactive form needs the file up front
     if (!text) { await chat(s2, true); return; }
     const r = await runTurn({ session: s2, userText: text, ...VIBE_TURN, onText: (t) => process.stdout.write(t), onEvent: printEvent });
     process.stdout.write("\n");
@@ -257,7 +261,13 @@ async function main() {
 
   let session: SessionData | undefined = opt("--session") ? findSession(opt("--session")!) : undefined;
   if (!session && flag("--resume-last")) session = listSessions().find((x) => x.status === "active" && x.cwd === cwd && !x.id.includes(":"));
-  if (!session) { session = newSession(cwd, opt("--title")); saveSession(session); }
+  if (!session) {
+    session = newSession(cwd, opt("--title"));
+    // A one-shot `run` that never reaches a turn should leave nothing behind; runTurn
+    // persists the session at turn end. Interactive chat is the one path that needs the
+    // file up front, because /fork, /switch and /sessions expect it to exist.
+    if (cmd === "chat") saveSession(session);
+  }
   if (opt("--model")) { session.knobs = { ...(session.knobs ?? {}), main_model: opt("--model") }; saveSession(session); }
   if (opt("--profile")) { session.knobs = { ...(session.knobs ?? {}), ...PROFILES[opt("--profile")!] }; saveSession(session); }
   if (cmd === "run") {

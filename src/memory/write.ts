@@ -35,7 +35,14 @@ const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").replace(/[。.!
 /** exact duplicate (same type and same normalized title or quote) */
 export function findDuplicate(store: MemoryStore, m: Pick<NewMemory, "type" | "title" | "quote">): MemoryEntry | undefined {
   const hits = store.search(m.quote ?? m.title, { limit: 20, type: m.type });
-  return hits.map((h) => h.entry).find((e) => norm(e.title) === norm(m.title) || (!!m.quote && !!e.quote && norm(e.quote) === norm(m.quote)));
+  const a = norm(m.title);
+  return hits.map((h) => h.entry).find((e) => {
+    const b = norm(e.title);
+    // exact, or one title fully inside the other ("X installed" vs "X installed globally"):
+    // two entries about the same thing are worse than one slightly stale entry
+    if (b === a || (a.length >= 8 && b.length >= 8 && (b.includes(a) || a.includes(b)))) return true;
+    return !!m.quote && !!e.quote && norm(e.quote) === norm(m.quote);
+  });
 }
 
 export function addUnlessDuplicate(store: MemoryStore, m: NewMemory): { entry: MemoryEntry; created: boolean } {
@@ -59,11 +66,21 @@ export function normalizeLinks(links: any, cwd: string): MemoryLink[] {
 
 export const EXTRACT_PROMPT = `You maintain the long-term memory of a coding assistant. From one finished turn, extract at most 5 memories worth keeping for future turns and future sessions.
 Keep only what is NOT recoverable from the code or git: decisions and why, user constraints and preferences, approaches that failed and why, non-obvious facts about the code (with the file), open questions, reusable procedures.
-Skip trivia, restatements of the code, one-off intermediate results, and anything already covered by an existing memory unless it changed.
+
+The test every item must pass: would this still be true, and still worth telling the assistant, in a different session a week from now? Write that reason in "durable" (<=15 words). An item without a real reason is dropped, so do not invent one -- return fewer items instead.
+
+The answer to the user's question is almost never a memory. These are NOT memories:
+- "the build succeeded", "the tests pass", "the commit is <hash>" -- true for minutes
+- "the installed version is 0.5.0", "the data lives in ~/.mph" -- re-checkable in one command, and wrong as soon as it changes
+- a restatement of what a file or function does -- reading the file is cheaper and current
+- the fact that you did what you were asked
+Save instead WHY a choice was made, what the user insists on, what was tried and failed, and what the code does not say about itself.
+
 Types: goal, constraint, preference, decision, fact, attempt, open, procedure.
 For each item choose op: "new"; "update" (refine existing id with the same meaning); "supersede" (replaces existing id that is now wrong); or omit it.
-Return ONLY JSON: {"items":[{"op":"new|update|supersede","id":"m12 (for update/supersede)","type":"...","title":"<=80 chars","body":"<=60 words","links":["path/to/file"],"quote":"exact user sentence, only for constraint/preference"}]}
-Return {"items":[]} when nothing is worth keeping.`;
+Prefer "update" or "supersede" over a second entry about the same thing.
+Return ONLY JSON: {"items":[{"op":"new|update|supersede","id":"m12 (for update/supersede)","type":"...","title":"<=80 chars","body":"<=60 words","durable":"why this still matters next week","links":["path/to/file"],"quote":"exact user sentence, only for constraint/preference"}]}
+Return {"items":[]} when nothing is worth keeping. That is the common case for a short factual exchange.`;
 
 export interface ExtractInput { userText: string; answer: string; toolSummary: string; existing: MemoryEntry[] }
 
@@ -75,13 +92,24 @@ export function parseJsonObject(text: string): any {
   return undefined;
 }
 
-export async function modelExtract(client: ModelClient, model: string, inp: ExtractInput, effort = "low"): Promise<{ items: any[]; usage: { input: number; cached: number; output: number } }> {
+/** an item has to say why it will still matter; `kept` and `dropped` are reported so the ledger can show the filter working */
+export function durableOnly(items: any[]): { kept: any[]; dropped: any[] } {
+  const kept: any[] = []; const dropped: any[] = [];
+  for (const x of items) {
+    const ok = x && typeof x.title === "string" && MEMORY_TYPES.includes(x.type) && typeof x.durable === "string" && x.durable.trim().length >= 4;
+    (ok ? kept : dropped).push(x);
+  }
+  return { kept: kept.slice(0, 5), dropped };
+}
+
+export async function modelExtract(client: ModelClient, model: string, inp: ExtractInput, effort = "low"): Promise<{ items: any[]; dropped: number; usage: { input: number; cached: number; output: number } }> {
   const existing = inp.existing.slice(0, 20).map((e) => `[${e.id} ${e.type}] ${e.title}`).join("\n") || "(none)";
   const text = `Existing related memories:\n${existing}\n\nUser message:\n${inp.userText.slice(0, 6000)}\n\nAssistant final answer:\n${inp.answer.slice(0, 6000)}\n\nTools used this turn:\n${inp.toolSummary.slice(0, 4000)}`;
   const r = await client.respond({ model, instructions: EXTRACT_PROMPT, input: [{ type: "message", role: "user", content: [{ type: "input_text", text }] }], tools: [], reasoningEffort: effort, maxOutputTokens: 1200 });
   const j = parseJsonObject(r.text);
   const items = Array.isArray(j?.items) ? j.items : [];
-  return { items: items.filter((x: any) => x && typeof x.title === "string" && MEMORY_TYPES.includes(x.type)).slice(0, 5), usage: r.usage };
+  const { kept, dropped } = durableOnly(items);
+  return { items: kept, dropped: dropped.length, usage: r.usage };
 }
 
 /** apply extracted items; returns ids touched */
