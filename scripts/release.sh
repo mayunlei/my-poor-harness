@@ -59,11 +59,12 @@ trap restore_bump EXIT
 
 if [ -n "$BUMP" ]; then
   echo "==> bumping version to $BUMP"
-  # a dry run must leave the tree byte-identical, so keep the originals aside
+  # Keep the originals aside until the bump is committed: a dry run has to leave the
+  # tree byte-identical, and a real run that dies in packaging (a failing test) used to
+  # leave the version bumped, so the next attempt refused with "working tree is dirty".
   SAVE=$(mktemp -d)
   cp package.json package-lock.json "$SAVE/"
   npm version "$BUMP" --no-git-tag-version >/dev/null
-  [ "$DRY" = "1" ] || { rm -rf "$SAVE"; SAVE=""; }
 fi
 
 VERSION=$(node -p "require('./package.json').version")
@@ -119,6 +120,7 @@ if [ -n "$(git status --porcelain -- package.json package-lock.json)" ]; then
   echo "==> committing the version bump"
   git commit -q -m "v$VERSION" -- package.json package-lock.json
 fi
+rm -rf "$SAVE"; SAVE=""      # committed: there is nothing left to restore
 
 echo "==> tagging $TAG"
 git tag -a "$TAG" -m "$NAME $TAG"
