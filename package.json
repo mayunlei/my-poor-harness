@@ -2,14 +2,36 @@
   "name": "my-poor-harness",
   "version": "0.7.0",
   "description": "Token-saving harness for coding agents: context rewrite core, Responses API proxy, agent loop with fork/merge, sidecar tuner, live dashboard.",
-  "private": true,
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mayunlei/my-poor-harness.git"
+  },
+  "homepage": "https://github.com/mayunlei/my-poor-harness#readme",
+  "bugs": {
+    "url": "https://github.com/mayunlei/my-poor-harness/issues"
+  },
+  "keywords": [
+    "agent",
+    "coding-agent",
+    "llm",
+    "tokens",
+    "context",
+    "codex",
+    "openai",
+    "responses-api",
+    "cli",
+    "proxy",
+    "prompt-cache"
+  ],
   "engines": {
     "node": ">=24"
   },
   "bin": {
-    "mph": "bin/mph.js"
+    "mph": "bin/mph.js",
+    "poor": "bin/mph.js",
+    "my-poor-harness": "bin/mph.js"
   },
   "files": [
     "bin",

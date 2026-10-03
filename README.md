@@ -175,19 +175,23 @@ One command, `mph`. `mph help` prints all of it; `mph <command> --help` has the 
 
 ## Install
 
-Either grab a release, or build from source. Node ≥ 24 either way: the memory store uses the
+From npm, from a release, or from source. Node ≥ 24 any way you do it: the memory store uses the
 built-in `node:sqlite`, and its FTS5 full-text index is only compiled in from Node 24 (Node 22
 has `node:sqlite` but answers `no such module: fts5`).
 
 ```bash
-# a) the standalone release: no toolchain, no npm install, no network
+# a) from npm — three names for the same command: mph, poor, my-poor-harness
+npm install -g my-poor-harness
+mph help
+
+# b) the standalone release: no toolchain, no npm install, no network
 gh release download --repo mayunlei/my-poor-harness --pattern '*standalone.tar.gz'
 tar xzf my-poor-harness-*-standalone.tar.gz && cd my-poor-harness-*/
 node bin/mph.js help
 
-# b) the npm tarball, if you want the commands on your PATH
+# c) the tarball off a release, if you want that exact build
 gh release download --repo mayunlei/my-poor-harness --pattern '*.tgz'
-npm install -g ./my-poor-harness-*.tgz        # puts one command, `mph`, on your PATH
+npm install -g ./my-poor-harness-*.tgz
 ```
 
 Check what you downloaded: `shasum -a 256 -c SHA256SUMS.txt`.

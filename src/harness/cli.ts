@@ -25,7 +25,8 @@ import { LEDGER_COMMANDS } from "../sidecar/commands.js";
 import { Renderer } from "./render.js";
 import { uiSettings } from "../upstream/config.js";
 
-const HELP = `mph — one command for the whole harness. State lives in ~/.mph (override with MPH_HOME).
+const HELP = `mph — one command for the whole harness, also installed as \`poor\` and \`my-poor-harness\`.
+State lives in ~/.mph (override with MPH_HOME).
 \`mph <command> --help\` has the flags for the bigger ones.
 
 conversation

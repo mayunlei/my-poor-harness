@@ -89,9 +89,14 @@ test("the dashboard page names itself correctly, even split across markup", asyn
 test("package metadata and the bin names agree", () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
   assert.equal(pkg.name, "my-poor-harness");
-  // one CLI: mph proxy / mph dash / mph report replaced the extra binaries
-  assert.deepEqual(Object.keys(pkg.bin), ["mph"], "there is exactly one command");
-  assert.equal(pkg.bin.mph, "bin/mph.js");
-  assert.ok(readFileSync(join(ROOT, pkg.bin.mph), "utf8").includes("launch("), "bin/mph.js is a launcher");
+  // Several names, still one command. `mph proxy` / `mph dash` / `mph report` replaced
+  // the extra binaries, and the aliases npm installs are symlinks to that same
+  // launcher -- not new entry points, which is what the four binaries were.
+  assert.deepEqual(Object.keys(pkg.bin).sort(), ["mph", "my-poor-harness", "poor"]);
+  const targets = new Set(Object.values(pkg.bin) as string[]);
+  assert.deepEqual([...targets], ["bin/mph.js"], "every name runs the same launcher");
+  assert.ok(readFileSync(join(ROOT, "bin/mph.js"), "utf8").includes("launch("), "bin/mph.js is a launcher");
   assert.deepEqual(readdirSync(join(ROOT, "bin")).sort(), ["_launch.js", "mph.js"], "no leftover launchers");
+  assert.ok(!("private" in pkg), "the package is publishable");
+  assert.equal(pkg.repository?.url?.includes("my-poor-harness"), true);
 });
