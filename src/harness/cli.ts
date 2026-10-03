@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { resolve } from "node:path";
 import { readFileSync, writeFileSync } from "node:fs";
+import { saveToDataset, listDatasets, readIndex, readCase, datasetsDir } from "./dataset.js";
 import { runTurn } from "./loop.js";
 import { strategyFor, STRATEGIES } from "./strategies/index.js";
 import { compareStrategies, formatCompare, saveCompare, loadTasks } from "./compare.js";
@@ -34,6 +35,11 @@ conversation
   map --task "..." (--items a,b,c | --items-file f) [--parallel 3]         map-reduce, fresh context per item
   compare --tasks f.json[l] [--strategies react,plan_verify] [--copy] [--json out]
   strategies | sessions | fork <id> <name> | merge <branch> <main> | discard <id>
+
+datasets (real sessions kept for backtesting a later harness)
+  save [<session> | --last] --note "一句话：这个会话用来解决什么问题" [--dataset name] [--id name]
+                                               the session with its full per-turn context; /save <note> inside chat
+  dataset [list] | dataset <name> | dataset show <name>/<id>
 
 serving
   proxy [--port 8791] [--provider ...] [--verbose]      transparent /v1/responses proxy: keep your current client
@@ -95,7 +101,12 @@ async function chat(session: SessionData, startInVibe = false) {
     } else if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/save <一句话注释：这个会话用来解决什么问题>  (keep this session in the dataset for backtesting)\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "save") {
+        try { const r = saveToDataset(session, { note: arg, dataset: "default" }); console.log(`saved ${r.turns} turns (${r.contextFiles} with full context) → ${r.dir}`); }
+        catch (e: any) { console.log(e?.message ?? e); }
+        continue;
+      }
       if (c === "continue" || c === "new") { pendingGate = c === "continue" ? "continue" : "rebuild"; console.log(`next turn will ${c === "continue" ? "carry the previous turn's work" : "start from the briefing only"}`); continue; }
       if (c === "memory") { memoryCommand(rest, true); continue; }
       if (c === "skills") { for (const sk of discoverSkills(session.cwd, projectOf(session.cwd))) console.log(skillLine(sk, 120)); continue; }
@@ -176,6 +187,29 @@ async function main() {
     if (sub === "list") { if (!skills.length) console.log("no skills found"); for (const sk of skills) console.log(`${skillLine(sk, 140)}\n    ${sk.file}`); return; }
     if (sub === "show") { const sk = skills.find((x) => x.name === args[2]); if (!sk) throw new Error(`no skill ${args[2]}`); console.log(loadSkillBody(sk)); return; }
     throw new Error("usage: mph skill list | show <name>");
+  }
+  if (cmd === "save") {
+    const ref = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+    const s = flag("--last") || !ref ? listSessions().find((x) => x.status === "active" && !x.id.includes(":") && (flag("--last") || x.cwd === cwd)) : findSession(ref);
+    if (!s) throw new Error(ref ? `no session ${ref}` : "no session to save (pass a session id, or --last)");
+    const r = saveToDataset(s, { note: opt("--note") ?? "", dataset: opt("--dataset"), id: opt("--id") });
+    console.log(`saved ${s.id} (${s.title}) as ${r.dataset}/${r.id}: ${r.turns} turns, ${r.contextFiles} with full context, ${r.ledgerRows} ledger rows, ${r.memories} memories\n${r.dir}`);
+    return;
+  }
+  if (cmd === "dataset" || cmd === "datasets") {
+    const sub = args[1] ?? "list";
+    if (sub === "list") { const ds = listDatasets(); if (!ds.length) console.log(`no datasets yet (${datasetsDir()}); save one with mph save --note "..."`); for (const d of ds) console.log(`${d.name.padEnd(20)} ${d.cases} case(s)`); return; }
+    if (sub === "show") {
+      const [ds, id] = String(args[2] ?? "").split("/"); if (!ds || !id) throw new Error("usage: mph dataset show <dataset>/<id>");
+      const k = readCase(ds, id);
+      console.log(`${ds}/${id}\nnote: ${k.note}\nsession: ${k.session.id} (${k.session.title}) in ${k.session.cwd}\nsaved: ${k.saved_at} · harness ${k.harness_version ?? "?"} · models ${k.models.main} / ${k.models.small}${k.git_at_save ? ` · git ${k.git_at_save.head?.slice(0, 10)}${k.git_at_save.dirty ? " (dirty)" : ""}` : ""}`);
+      for (const t of k.turns) console.log(`\n[turn ${t.idx}] ${t.gate ? `(${t.gate.action}) ` : ""}${t.steps} steps · in ${t.usage.input} · ${t.files_changed.length ? "files: " + t.files_changed.join(", ") : "no files"}\n  user: ${t.user.replace(/\s+/g, " ").slice(0, 200)}\n  answer: ${String(t.answer_card || t.answer).replace(/\s+/g, " ").slice(0, 200)}`);
+      return;
+    }
+    const rows = readIndex(sub);
+    if (!rows.length) { console.log(`dataset ${sub} is empty or missing`); return; }
+    for (const r of rows) console.log(`${r.id.padEnd(34)} ${String(r.turns).padStart(3)} turns  ${r.note}`);
+    return;
   }
   if (cmd === "sessions") { for (const s of listSessions()) console.log(`${s.id}  ${s.status.padEnd(9)} turns=${String(s.turns.length).padStart(3)}  ${s.cwd}  ${s.title}`); return; }
   if (cmd === "fork") { const p = findSession(args[1]); if (!p) throw new Error("no such session"); const c = forkSession(p, args[2] ?? "fork"); console.log(c.id); return; }

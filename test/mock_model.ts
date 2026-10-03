@@ -4,7 +4,7 @@
  */
 import { createServer, type Server } from "node:http";
 
-export type Script = (body: any, n: number) => { output: any[]; usage?: any };
+export type Script = (body: any, n: number) => { output: any[]; usage?: any } | { status: number; body: string };
 
 export function startMock(script: Script): Promise<{ server: Server; url: string; requests: any[]; close: () => Promise<void> }> {
   const requests: any[] = []; let n = 0;
@@ -13,6 +13,7 @@ export function startMock(script: Script): Promise<{ server: Server; url: string
     req.on("end", () => {
       const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"); requests.push(body);
       const r = script(body, n++);
+      if ("status" in r) { res.writeHead(r.status, { "content-type": "application/json" }); res.end(r.body); return; }
       const inputTok = JSON.stringify(body.input ?? []).length / 4;
       const usage = r.usage ?? { input_tokens: Math.round(inputTok), input_tokens_details: { cached_tokens: Math.round(inputTok * 0.8) }, output_tokens: 50, output_tokens_details: { reasoning_tokens: 10 } };
       const response = { id: "resp_" + n, object: "response", output: r.output, usage };

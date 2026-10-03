@@ -542,6 +542,6 @@ scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
 .github/      ci and release workflows
 ```
 
-Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `memory.db`, `skills/`, `proxy/sessions/`, `harness/sessions/`, `harness/transcripts/`, `jobs/`, `sidecar/`). Override with `MPH_HOME`.
+Data lives under `~/.mph/` (`artifacts/`, `ledger.jsonl`, `knobs.json`, `config.json`, `codex-auth.json`, `memory.db`, `skills/`, `proxy/sessions/`, `harness/sessions/`, `harness/transcripts/`, `datasets/`, `jobs/`, `sidecar/`). Override with `MPH_HOME`.
 
 Multi-agent Codex sessions: `agent_message` items (spawn_agent / send_message traffic, payload encrypted) are folded outside the window like tool outputs: a one-line stub with the message header; text payloads go to the artifact store and are recallable, encrypted payloads are dropped.

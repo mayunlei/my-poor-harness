@@ -68,3 +68,19 @@ test("OpenAIResponsesClient parses calls and usage (non-stream)", async () => {
   assert.equal(r.calls[0].name, "run"); assert.equal(r.text, "hi"); assert.equal(r.usage.cached, 60);
   await mock.close();
 });
+
+test("OpenAIResponsesClient retries without unsupported max_output_tokens", async () => {
+  const mock = await startMock((body, n) => {
+    if (n === 0) {
+      assert.equal(body.max_output_tokens, 1200);
+      return { status: 400, body: JSON.stringify({ detail: "Unsupported parameter: max_output_tokens" }) };
+    }
+    assert.equal(body.max_output_tokens, undefined);
+    return { output: [msg("memory extracted")] };
+  });
+  const c = new OpenAIResponsesClient(mock.url + "/v1", "k");
+  const r = await c.respond({ model: "small", instructions: "extract", input: [], tools: [], maxOutputTokens: 1200 });
+  assert.equal(r.text, "memory extracted");
+  assert.equal(mock.requests.length, 2);
+  await mock.close();
+});

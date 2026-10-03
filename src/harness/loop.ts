@@ -22,6 +22,7 @@ import { candidates as memoryCandidates, pinnedWithin, renderMemoryBriefing } fr
 import { addUnlessDuplicate, applyExtracted, modelExtract, ruleExtract } from "../memory/write.js";
 import { discoverSkills, loadSkillBody, projectInstructions, renderSkillIndex, type Skill } from "../skills/index.js";
 import { memorySettings, type MemorySettings } from "../upstream/config.js";
+import { gitState } from "./dataset.js";
 import { Router, taskClassOf, type Tier } from "./router.js";
 import { saveSession, type SessionData, type TurnRecord } from "./session.js";
 import type { ModelResponse } from "./providers.js";
@@ -113,6 +114,7 @@ export async function runTurn(o: TurnOptions): Promise<TurnResult> {
   let mt: MultiTurnState | undefined;
 
   if (multiTurn) {
+    rec.git = gitState(session.cwd);
     mt = await prepareMultiTurn({ o, session, knobs, store, ledger, router, turnIdx, ctx });
     items = mt.items; instructions = mt.instructions; toolDefs = MULTI_TURN_TOOL_DEFS;
     // the gate already decided what to carry; inside the turn only the budget fold applies

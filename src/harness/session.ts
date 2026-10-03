@@ -16,6 +16,8 @@ export interface TurnRecord {
   idx: number; user: string; steps: number; startedAt: string; endedAt?: string;
   usage: { input: number; cached: number; output: number; reasoning: number };
   transcriptArtifact?: string; finalText?: string; outcome?: "success" | "fail" | "unknown";
+  /** repository state when the turn started (multi-turn mode), so a saved case can be replayed on the same code */
+  git?: { root: string; head?: string; branch?: string; dirty?: boolean };
 }
 export interface MergedBlock { from: string; fromTitle: string; at: string; text: string; transcriptArtifact?: string }
 export interface SessionData {
