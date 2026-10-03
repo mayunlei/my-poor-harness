@@ -73,9 +73,12 @@ test("the batch runs concurrently, and tool_parallel bounds it", async () => {
 
   const parallel = await run(8);
   const serial = await run(1);
-  // 3 x 400ms: together is one sleep, one at a time is three. Wide margins on purpose.
-  assert.ok(parallel < 900, `three concurrent 400ms sleeps took ${parallel}ms`);
-  assert.ok(serial > 1100, `three serialized 400ms sleeps took only ${serial}ms`);
+  // 3 x 400ms: together is one sleep, one at a time is three. Compared against each
+  // other, not against the clock: absolute thresholds here failed once on a machine
+  // busy running the rest of the suite, which is a flake, not a finding.
+  assert.ok(serial > parallel * 1.8, `serial ${serial}ms should be well above parallel ${parallel}ms`);
+  assert.ok(serial > 1100, `three serialized 400ms sleeps cannot take only ${serial}ms`);
+  assert.ok(parallel < 3 * 400 + 2000, `three concurrent sleeps should not look serial (${parallel}ms)`);
 });
 
 test("synchronous tools in one batch do not interleave, so same-file edits all land", async () => {
