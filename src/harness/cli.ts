@@ -57,12 +57,33 @@ settings
   login | logout | whoami                      ChatGPT (Codex OAuth) login for the built-in upstream
   config [k=v ...]                             provider, base_url, api_key, wire_api, *_model, memory_*`;
 
+const MODEL_TIERS = ["main", "mid", "small"] as const;
+type ModelTier = typeof MODEL_TIERS[number];
+
 const VIBE_BANNER = `vibe on: tell me what you want the harness to do and I will read and change its own settings.
   e.g. "把记忆关掉" · "这个项目上下文给小一点" · "换成我自己的 qwen 端点" · "现在是什么配置"
   I can read the workspace and the settings; I cannot edit your files or run commands here. /vibe off to leave.`;
 
 /** one definition of what vibe mode is: its prompt, its tools, and no memory writes */
 const VIBE_TURN = { instructions: VIBE_PROMPT, toolNames: VIBE_TOOL_NAMES, multiTurn: false as const };
+
+function showModels(session: SessionData): void {
+  const u = resolveUpstream();
+  const m = resolveModels(resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any), process.env, u);
+  console.log(`models (session ${session.id}):`);
+  for (const tier of MODEL_TIERS) console.log(`  ${tier.padEnd(5)} ${m[tier]} (${m.source[tier]})`);
+  if (u.provider === "codex") console.log(`available: ${u.codexModels.join(", ")}`);
+  else console.log("available: endpoint does not advertise a model list; any model id is accepted");
+  console.log("usage: /model <model> | /model <main|mid|small> <model> | /model auto");
+}
+
+function setSessionModel(session: SessionData, tier: ModelTier, value: string): void {
+  const model = value === "auto" ? "" : value;
+  session.knobs = { ...(session.knobs ?? {}), [`${tier}_model`]: model };
+  saveSession(session);
+  const m = resolveModels(resolveKnobs(knobsFor({ project: session.cwd, session: session.id }), session.knobs as any), process.env, resolveUpstream());
+  console.log(`${tier} model ${model || "auto"} → ${m[tier]}`);
+}
 
 const args = process.argv.slice(2);
 const cmd = args[0] ?? "chat";
@@ -101,8 +122,15 @@ async function chat(session: SessionData, startInVibe = false) {
     } else if (line.startsWith("/")) {
       const [c, ...rest] = line.slice(1).split(/\s+/); const arg = rest.join(" ");
       if (c === "quit" || c === "exit") break;
-      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/save <一句话注释：这个会话用来解决什么问题>  (keep this session in the dataset for backtesting)\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
-      if (c === "save") {
+      if (c === "help") { console.log("/vibe [what you want]  /vibe off  (configure the harness by talking to it)\n/continue  /new  (force how the next turn starts)\n/memory [list|search <q>|get <id>|pin <id>|unpin <id>|forget <id>]  /skills\n/save <一句话注释：这个会话用来解决什么问题>  (keep this session in the dataset for backtesting)\n/model [list|auto|<model>|<main|mid|small> <model>]  choose the session model (like Claude Code/Codex)\n/fork <name>  /merge <branch>  /discard  /switch <id|name>  /sessions  /knobs [k=v ...]  /profile <name>  /strategy [name]  /compact  /stats  /quit"); continue; }
+      if (c === "model") {
+         if (!rest.length || rest[0] === "list") { showModels(session); continue; }
+         const tier = MODEL_TIERS.includes(rest[0] as ModelTier) ? rest[0] as ModelTier : "main";
+         const value = tier === "main" && rest[0] !== "main" && rest.length === 1 ? rest[0] : rest[1];
+         if (!value) { console.log("usage: /model <model> | /model <main|mid|small> <model> | /model auto"); continue; }
+         setSessionModel(session, tier, value); continue;
+       }
+       if (c === "save") {
         try { const r = saveToDataset(session, { note: arg, dataset: "default" }); console.log(`saved ${r.turns} turns (${r.contextFiles} with full context) → ${r.dir}`); }
         catch (e: any) { console.log(e?.message ?? e); }
         continue;

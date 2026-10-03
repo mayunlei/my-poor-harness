@@ -1,6 +1,6 @@
 # Usage
 
-A token-saving harness for coding agents, built from the analysis of 2,128 local Codex sessions
+A token-saving harness for coding agents, built from the analysis of 4,056 Codex sessions on two machines (fork copies counted once; `bench/session_report.py`)
 (see [DESIGN.md](DESIGN.md)). Each layer is usable on its own:
 
 There is one command, `mph`; every layer below is one of its subcommands (`mph help` lists them).
@@ -580,7 +580,8 @@ src/upstream  meter (quota/billing headers), price_probe (the controlled experim
 bench/multiturn/       multi-turn golden set: cases.json + run.ts (arms full / hybrid / hybrid-nomem)
 bench/swe_regress.py   R6 quality regression on SWE-bench Lite dev: arms off / on / tight, same model, judged with hidden tests
 src/bench     replay
-bench/        codex_session_stats.py (the analysis that produced DESIGN.md §2)
+bench/        codex_session_stats.py (the analysis that produced DESIGN.md §2; counts fork copies twice)
+bench/session_report.py  fork-aware token statistics over ~/.codex (CODEX_HOME to override): the README numbers
 bench/topology.py      ReAct vs plan_verify token arithmetic and the crossover
 test/         node:test suites with a mock Responses server
 scripts/      package.sh (release artifacts), release.sh (tag + GitHub release)
