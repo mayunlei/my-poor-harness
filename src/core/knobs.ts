@@ -65,6 +65,7 @@ export const KNOB_SPECS = {
   answer_card_model: { default: false, description: "always use the small model for answer cards (default: rules first, model as fallback)" } as KnobSpec<boolean>,
   skill_index_budget: { default: 1500, min: 200, max: 8000, step: 100, description: "tokens of the skill index in the static prefix" } as KnobSpec<number>,
   project_doc_budget: { default: 4000, min: 0, max: 20000, step: 500, description: "tokens of AGENTS.md / CLAUDE.md loaded into the static prefix" } as KnobSpec<number>,
+  recall_keep_last: { default: 2, min: 0, max: 10, step: 1, description: "keep this many of the most recent recall() outputs verbatim: re-folding what the model just asked to see back is a fold/recall loop" } as KnobSpec<number>,
   shell_login: { default: "cached", choices: ["cached", "always", "never"], description: "run(cmd) shell: cached = capture the login shell's env and functions once, then plain bash -c; always = bash -lc every time (correct, ~0.7s each); never = bash -c with no profile" } as KnobSpec<string>,
   tool_parallel: { default: 8, min: 1, max: 32, step: 1, description: "tool calls from one response run concurrently, at most this many in flight (1 = one at a time)" } as KnobSpec<number>,
   t3_escalate_pass_rate: { default: 0.7, min: 0.3, max: 0.95, step: 0.05, description: "escalate a task class when cheap-model pass rate drops below this" } as KnobSpec<number>,

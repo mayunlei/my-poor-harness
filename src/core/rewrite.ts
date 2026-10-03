@@ -346,6 +346,17 @@ export function rewrite(input: any[], ctx: RewriteContext): { input: any[]; stat
     reasoningCutIdx = key.startsWith("idx:") ? Number(key.slice(4)) : items.findIndex((it) => it.kind === "reasoning" && ((it as any).id ?? it.raw?.id) === key);
   }
 
+  // The model asked to see these back; folding them again in the same breath is a
+  // fold -> recall -> fold loop, and each turn of it costs a whole model round trip.
+  // The last `recall_keep_last` recall outputs are left verbatim; once they fall out
+  // of that tail the normal boundary rule folds them like anything else.
+  const protectedRecalls = new Set<number>();
+  if (k.recall_keep_last > 0) {
+    for (let i = items.length - 1, kept = 0; i >= 0 && kept < k.recall_keep_last; i--) {
+      if (items[i].kind === "output" && (items[i] as any).tool === "recall") { protectedRecalls.add(i); kept++; }
+    }
+  }
+
   // --- apply fold: stubs, drop old reasoning, insert digest ---------------------------
   let folded = 0, reasoningDropped = 0;
   const out: Item[] = [];
@@ -365,7 +376,7 @@ export function rewrite(input: any[], ctx: RewriteContext): { input: any[]; stat
     }
     if (i < boundary) {
       // a loaded skill is the model's operating manual for this turn: never fold it mid-turn
-      if (it.kind === "output" && k.stub_old_outputs && !(it.tool === "skill" && it.text.startsWith("[skill "))) { foldedItems.push(it); out.push(stubFor(it, callsById, store, state.stubs)); folded++; continue; }
+      if (it.kind === "output" && k.stub_old_outputs && !(it.tool === "skill" && it.text.startsWith("[skill ")) && !protectedRecalls.has(i)) { foldedItems.push(it); out.push(stubFor(it, callsById, store, state.stubs)); folded++; continue; }
       if (it.kind === "other" && k.stub_old_outputs && it.raw?.type === "agent_message" && Array.isArray(it.raw.content)) {
         // Codex multi-agent traffic (spawn_agent / send_message). Outside the window the payload is dead weight:
         // text parts go to the artifact store (recallable); encrypted parts cannot be recalled and are dropped.

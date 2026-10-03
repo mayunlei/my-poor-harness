@@ -26,6 +26,7 @@ const { Router } = await import("../src/harness/router.js");
 const { Ledger } = await import("../src/core/ledger.js");
 const { ArtifactStore } = await import("../src/core/artifacts.js");
 const { resolveKnobs } = await import("../src/core/knobs.js");
+const { rewrite, newRewriteState } = await import("../src/core/rewrite.js");
 const { buildReport, formatReport, compactionEffects, recallUnitCost, RECALL_COST_FALLBACK } = await import("../src/sidecar/metrics.js");
 const { tune, saveTunerState } = await import("../src/sidecar/tuner.js");
 
@@ -142,3 +143,35 @@ test("the tuner rolls a trial back when nothing says whether quality held", () =
   assert.match(rollback!, /"turn_budget":60000/, "the knob goes back to where it was");
 });
 
+test("the fold leaves the newest recall outputs alone, so it cannot undo what it just asked for", () => {
+  // the loop the real session showed: fold -> the model recalls a stub -> the next fold
+  // stubs the recall's own output -> the model recalls it again, a round trip each time.
+  // The verbatim window already protects the newest outputs, so the recalls under test
+  // sit further back, inside the range the fold would otherwise stub.
+  const art = new ArtifactStore(join(HOME, "fold-art"));
+  const items: any[] = [{ type: "message", role: "user", content: [{ type: "input_text", text: "audit the repo" }] }];
+  const big = (tag: string) => `Output:\n` + `${tag} `.repeat(500);
+  const tools = ["read", "recall", "read", "recall", "recall", "read", "read", "read"];
+  tools.forEach((tool, i) => {
+    const id = `c${i + 1}`;
+    items.push({ type: "function_call", name: tool, call_id: id, arguments: "{}" });
+    items.push({ type: "function_call_output", call_id: id, output: big(tool + (i + 1)) });
+  });
+
+  const run = (recall_keep_last: number) => {
+    const knobs = resolveKnobs({ recall_keep_last, turn_budget: 2000, window: 3, per_output_cap: 400 });
+    const r = rewrite(items, { knobs, store: art, state: newRewriteState("fold" + recall_keep_last), now: 1, forceCompact: true });
+    const stubbed = new Set<string>();
+    for (const x of r.input as any[]) if (typeof x.output === "string" && x.output.startsWith("[output #")) stubbed.add(x.call_id);
+    return stubbed;
+  };
+
+  // window=3 keeps c6..c8 verbatim; the fold covers c1..c5, where c4 and c5 are recalls
+  const guarded = run(2);
+  assert.ok(!guarded.has("c4") && !guarded.has("c5"), `the two newest recall outputs must survive the fold, stubbed: ${[...guarded]}`);
+  assert.ok(guarded.has("c1") && guarded.has("c3"), `ordinary outputs still fold, stubbed: ${[...guarded]}`);
+  assert.ok(guarded.has("c2"), "a recall older than the protected tail folds like anything else");
+
+  const off = run(0);
+  for (const id of ["c1", "c2", "c3", "c4", "c5"]) assert.ok(off.has(id), `with the knob off ${id} folds too`);
+});
