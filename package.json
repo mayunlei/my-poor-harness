@@ -1,6 +1,6 @@
 {
   "name": "my-poor-harness",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Token-saving harness for coding agents: context rewrite core, Responses API proxy, agent loop with fork/merge, sidecar tuner, live dashboard.",
   "type": "module",
   "license": "MIT",
