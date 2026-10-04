@@ -20,6 +20,7 @@ import { appendAnswer, appendUser, checkUserFidelity, readTranscript, renderTran
 import { MemoryStore, projectOf, type MemoryEntry } from "../memory/store.js";
 import { candidates as memoryCandidates, pinnedWithin, renderMemoryBriefing } from "../memory/recall.js";
 import { addUnlessDuplicate, applyExtracted, modelExtract, ruleExtract } from "../memory/write.js";
+import { codexBriefingHits, codexHitLine, codexMemoryRoots } from "../memory/codex.js";
 import { discoverSkills, loadSkillBody, projectInstructions, renderSkillIndex, type Skill } from "../skills/index.js";
 import { memorySettings, type MemorySettings } from "../upstream/config.js";
 import { gitState } from "./dataset.js";
@@ -371,6 +372,14 @@ async function prepareMultiTurn(a: MultiTurnArgs): Promise<MultiTurnState> {
     for (const id of b.detail) memory.touch(id);
   }
 
+  // --- Codex CLI memory: a few pointers when the message clearly matches past Codex work ---------
+  const codexOn = !!settings.codex && codexMemoryRoots().length > 0;
+  let codexText: string | undefined;
+  if (codexOn && knobs.codex_memory_hints > 0) {
+    const hits = codexBriefingHits(o.userText, project, knobs.codex_memory_hints);
+    if (hits.length) codexText = "## Codex memory: possibly relevant past work (codex_memory(ref) reads one; point-in-time, re-check live state)\n" + hits.map(codexHitLine).join("\n");
+  }
+
   // --- skills preloaded by the gate -----------------------------------------------------------
   const preloaded = gate.skills.map((n) => skills.find((s) => s.name === n)).filter((s): s is Skill => !!s && !s.missing.length);
   const skillText = preloaded.length ? preloaded.map((s) => loadSkillBody(s)).join("\n\n") : undefined;
@@ -386,12 +395,12 @@ async function prepareMultiTurn(a: MultiTurnArgs): Promise<MultiTurnState> {
   const gateNote = gate.action === "continue" && carried.length
     ? "The previous turn's tool calls and outputs are included above (older ones as stubs)."
     : turnIdx > 0 ? "Earlier tool work is not shown verbatim; the workspace state and memories below summarize it, and recall(id) in earlier answers expands it." : undefined;
-  const briefing = renderBriefing({ gate: gateNote, workspace: workspaceDigest(session), merged: mergedBlocks(session), memory: memoryText, skills: skillText, userTextWarning: warning });
+  const briefing = renderBriefing({ gate: gateNote, workspace: workspaceDigest(session), merged: mergedBlocks(session), memory: memoryText, codexMemory: codexText, skills: skillText, userTextWarning: warning });
   const asm = assembleInput({ transcript: transcriptItems, carried, briefing, userText: o.userText });
   const instructions = [MULTI_TURN_PROMPT, renderSkillIndex(skills, knobs.skill_index_budget), projectInstructions(session.cwd, project, knobs.project_doc_budget)].filter(Boolean).join("\n\n");
 
   Object.assign(ctx, {
-    memory, memoryRecall: !!memory && settings.recall, memoryWrite: !!memory && settings.write,
+    memory, memoryRecall: !!memory && settings.recall, memoryWrite: !!memory && settings.write, codexMemory: codexOn,
     memoryShown: shown, memoryUsed: new Set<string>(), memoryMisses: [], remembered: [],
     project, turn: turnIdx, skills, skillsLoaded: preloaded.map((s) => s.name),
   });

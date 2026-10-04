@@ -50,7 +50,10 @@ test("sanitize strips escapes, C0 controls and lone surrogates", () => {
   assert.equal(sanitize("a\u001b[2Kb"), "ab");
   assert.equal(sanitize("a\u001b]0;title\u0007b"), "ab");
   assert.equal(sanitize("a\u001b[?1049hb"), "ab");
-  assert.equal(sanitize("a\u0000\u0007b\tc\nd"), "ab\tc\nd");
+  // a tab counted as one column is a line that reflows, so it becomes the spaces it
+  // already was on screen: tab stops every 8, measured from the start of the line
+  assert.equal(sanitize("a\u0000\u0007b\tc\nd"), "ab      c\nd");
+  assert.equal(sanitize("\t\tx"), " ".repeat(16) + "x");
   // what JSON.stringify(args).slice(0, 120) produces all by itself
   assert.equal(sanitize("ok \ud83d"), "ok �");
   assert.equal(sanitize("\ude00 ok"), "� ok");
@@ -153,6 +156,16 @@ test("the status bar carries the title, tokens and latency, and fits the window"
   }
 });
 
+test("a task title cannot smuggle an escape into the bar", () => {
+  const f = fakeTty(60);
+  const r = mk(f, { color: false });
+  r.turnStart({ title: "fix \u001b[2Jthe\tbar", model: "m\u0007", maxSteps: 1 });
+  const bar = r.statusText();
+  assert.ok(!bar.includes("\u001b") && !bar.includes("\u0007"), JSON.stringify(bar));
+  assert.ok(bar.includes("fix the bar"), bar);
+  r.close();
+});
+
 test("the bar is erased before anything prints above it and when it is put away", () => {
   const f = fakeTty(50);
   const r = mk(f, { color: false });
@@ -168,6 +181,21 @@ test("the bar is erased before anything prints above it and when it is put away"
   r.suspend();
   assert.equal(f.writes.at(-1), "\r\u001b[2K");
   assert.ok(!f.visible.includes("\u001b"), "nothing but the erase and SGR may be escapes");
+});
+
+test("a tty that reports no window size is 80 columns, not zero", () => {
+  // `script`, a pty opened without a winsize, some CI runners: columns is 0, and taken
+  // literally that turns wrapping off (cols <= 2) and leaves the bar empty
+  const writes: string[] = [];
+  const out = { write: (s: string) => { writes.push(s); return true; }, isTTY: true, columns: 0, on: () => {} };
+  const r = new Renderer({ out, tty: true, ui: { flushMs: 0, color: false, statusBar: false } });
+  r.line("y".repeat(300));
+  for (const l of writes.join("").trimEnd().split("\n")) assert.ok(displayWidth(l) <= 79, `${displayWidth(l)} columns`);
+  const bar = new Renderer({ out: { ...out, write: () => true }, tty: true, ui: { flushMs: 0, color: false } });
+  bar.turnStart({ title: "task", model: "m", maxSteps: 1 });
+  assert.ok(bar.statusText().trim().length > 0, "and the bar is not an empty reverse-video line");
+  assert.equal(displayWidth(bar.statusText()), 79);
+  bar.close();
 });
 
 test("no status bar, no wrapping and no escapes when the output is not a tty", () => {
@@ -194,6 +222,88 @@ test("turnEnd folds the last step, flushes the answer and leaves the summary", (
   assert.match(lines[0], /step 1\s+1 tool \(run\)/);
   assert.equal(lines[1], "the answer, unterminated");
   assert.equal(lines[2], "  [1 steps · in 10 · out 2]");
+});
+
+test("a bar-only rewrite waits for status_ms; text never waits", async () => {
+  const f = fakeTty(50);
+  const r = new Renderer({ out: f.out, tty: true, width: 50, ui: { flushMs: 0, statusMs: 50, color: false } });
+  r.turnStart({ title: "task", model: "m", maxSteps: 4 });
+  assert.equal(f.writes.length, 1, "the first bar is drawn at once");
+  for (let i = 1; i <= 20; i++) r.status({ input: i * 100, phase: "tools" });
+  assert.equal(f.writes.length, 1, "rewriting the last line 20x is what kills Terminal");
+  r.line("a result line");
+  assert.equal(f.writes.length, 2, "text goes out when it is ready, bar and all");
+  assert.ok(f.writes[1].includes("a result line"));
+  await new Promise((d) => setTimeout(d, 70));
+  r.status({ input: 9000 });
+  assert.equal(f.writes.length, 3, "once the window has passed, the bar catches up");
+  assert.ok(f.writes[2].includes("9.0k"), f.writes[2]);
+  r.close();
+});
+
+test("a tab cannot make a line wider than the window", () => {
+  const f = fakeTty(40);
+  const r = mk(f, { statusBar: false });
+  r.line("col\tvalue\tand\tanother\tand\tone\tmore\tstill");
+  r.text("1\t2\t3\t4\t5\t6\t7\t8\t9\t10\n");
+  r.endText();
+  for (const l of f.visible.split("\n")) assert.ok(displayWidth(l) <= 39, `${displayWidth(l)}: ${JSON.stringify(l)}`);
+  assert.ok(!f.visible.includes("\t"), "a tab is the one width we cannot honour");
+});
+
+test("one step line per step when there is no bar to show progress in", () => {
+  const f = fakeTty(60);
+  const r = mk(f, { statusBar: false, stepLines: true });
+  r.turnStart({ title: "t", model: "gpt-5.6-sol", maxSteps: 24 });
+  r.stepStart(1);
+  r.event({ kind: "tool", detail: "read a.ts" });
+  r.stepStart(2);
+  r.turnEnd();
+  const lines = f.visible.trimEnd().split("\n");
+  assert.match(lines[0], /step 1\/24\s+gpt-5\.6-sol\s+in 0 out 0/);
+  assert.match(lines[1], /step 1\s+1 tool \(read\)/);
+  assert.match(lines[2], /step 2\/24/);
+  // and nothing of the sort when the bar is carrying the same information
+  const g = fakeTty(60);
+  const q = mk(g, { statusBar: false, stepLines: false });
+  q.turnStart({ title: "t", model: "m", maxSteps: 2 });
+  q.stepStart(1);
+  assert.equal(g.visible, "");
+});
+
+test("a loud event with a whole error page in it is cut, not printed", () => {
+  const f = fakeTty(80);
+  const r = mk(f, { statusBar: false });
+  r.event({ kind: "warn", detail: "upstream 500: " + "<html><body>oh no</body></html>".repeat(500) });
+  const lines = f.visible.trimEnd().split("\n");
+  assert.ok(lines.length <= 16, `one warning became ${lines.length} lines`);
+  for (const l of lines) assert.ok(displayWidth(l) <= 79, JSON.stringify(l));
+  assert.ok(f.visible.includes("…"), "and it says that it was cut");
+});
+
+test("wrapping a huge line is linear, so one big tool result cannot freeze the turn", () => {
+  const long = "x".repeat(400_000);
+  const t0 = Date.now();
+  const parts = wrapToWidth(long, 119);
+  const ms = Date.now() - t0;
+  assert.equal(parts.length, Math.ceil(400_000 / 119));
+  for (const p of parts) assert.ok(displayWidth(p) <= 119);
+  assert.ok(ms < 2000, `${ms}ms to wrap 400KB -- that is the quadratic version`);
+});
+
+test("Apple Terminal gets the append-only profile, and an override still wins", () => {
+  const apple = uiSettings({ TERM_PROGRAM: "Apple_Terminal" } as any);
+  assert.equal(apple.statusBar, false, "nothing may be rewritten in place there");
+  assert.equal(apple.stepLines, true, "so progress goes in the scrollback instead");
+  assert.equal(apple.flushMs, 120);
+  assert.equal(apple.statusMs, 1000);
+  const forced = uiSettings({ TERM_PROGRAM: "Apple_Terminal", MPH_UI_STATUS_BAR: "on", MPH_UI_STATUS_MS: "250" } as any);
+  assert.equal(forced.statusBar, true);
+  assert.equal(forced.statusMs, 250);
+  assert.equal(forced.stepLines, false, "the bar is back, so the step lines go away");
+  const other = uiSettings({ TERM_PROGRAM: "iTerm.app" } as any);
+  assert.equal(other.statusBar, true);
+  assert.equal(other.statusMs, 500);
 });
 
 test("ui settings come from the environment, and TERM=dumb turns the decoration off", () => {

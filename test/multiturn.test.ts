@@ -189,8 +189,8 @@ test("models: gpt-5.6-luna is the small model on ChatGPT OAuth; own endpoints de
   saveConfigFile({ small_model: "gpt-5.4-nano", memory: { recall: false } });
   assert.equal(resolveModels({}, {}).small, "gpt-5.4-nano");
   assert.equal(resolveModels({ small_model: "knob-wins" }, {}).small, "knob-wins");
-  assert.deepEqual(memorySettings({}), { recall: false, write: true });
-  assert.deepEqual(memorySettings({ MPH_MEMORY_RECALL: "1", MPH_MEMORY_WRITE: "off" }), { recall: true, write: false });
+  assert.deepEqual(memorySettings({}), { recall: false, write: true, codex: true });
+  assert.deepEqual(memorySettings({ MPH_MEMORY_RECALL: "1", MPH_MEMORY_WRITE: "off", MPH_MEMORY_CODEX: "0" }), { recall: true, write: false, codex: false });
   saveConfigFile({});
 });
 

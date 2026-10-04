@@ -127,7 +127,7 @@ function overview(cwd: string, session: string): string {
     `project: ${project}    session: ${session}`,
     `upstream: ${describeUpstream(up)}`,
     `models: main ${m.main} (${m.source.main}) · mid ${m.mid} (${m.source.mid}) · small ${m.source.small === "default" && m.small === m.main ? `${m.small} (same as main)` : `${m.small} (${m.source.small})`}`,
-    `memory: recall ${ms.recall ? "on" : "off"} · write ${ms.write ? "on" : "off"} · ${memCount}`,
+    `memory: recall ${ms.recall ? "on" : "off"} · write ${ms.write ? "on" : "off"} · codex ${ms.codex ? "on" : "off"} · ${memCount}`,
     `skills: ${skills.length ? skills.map((s) => s.name).join(", ") : "none found"}`,
     `ledger: ${rows} rows`,
     ``,

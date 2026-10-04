@@ -2,12 +2,18 @@
  * Terminal output for the interactive CLI.
  *
  * Every rule in here is a mitigation first and a UI choice second. Apple Terminal
- * 2.14 (macOS 14.7.1) crashes while mph streams: its timer-driven link detector
- * walks the scrollback as an NSAttributedString
- * (__NSFireTimer -> -[NSAttributedString URLAtIndex:effectiveRange:] ->
- * CFStringFindCharacterFromSet -> _platform_memmove, SIGSEGV at 0) and the window
- * dies a few seconds into a turn, taking mph with it mid-turn. We cannot fix
- * Terminal, so we stop handing it the input it chokes on:
+ * 2.14 (macOS 14.7.1) crashes while mph streams. It has done so with three different
+ * signatures, all of them its own memory being torn apart while the text storage is
+ * mutated under its timers:
+ *
+ *   __NSFireTimer -> -[NSAttributedString URLAtIndex:effectiveRange:] ->
+ *     CFStringFindCharacterFromSet -> _platform_memmove, SIGSEGV at 0
+ *   tiny_malloc_from_free_list -> free_list_checksum_botch -> abort
+ *   -[_NSTrackingAreaAKViewHelper _recursiveSetTrackingAreasDirty:] -> -[NSView
+ *     subviews] -> _cow_copy -> os_unfair_lock_corruption_abort
+ *
+ * The window dies a few seconds to a few minutes into a turn, taking mph with it. We
+ * cannot fix Terminal, so we stop handing it the input it chokes on:
  *
  *   one writer      events used to go to stderr while the answer went to stdout;
  *                   two fds on one pty interleave inside a half-written line.
@@ -20,11 +26,21 @@
  *   no escapes in   ESC and the other C0 controls are stripped from everything the
  *                   model or a tool produced; only our own status line emits SGR.
  *   less output     folded tool calls cut what has to be scanned at all.
+ *   slow rewrites   the one line we rewrite in place -- the status bar -- is rewritten
+ *                   at most once per status_ms, not once per flush. A two-minute turn
+ *                   rewrote the bottom line a few thousand times; now it is a few hundred.
+ *   no rewrites     and on Apple Terminal the bar is off by default (config.ts), so
+ *                   what it gets is append-only text with no control sequences at all.
+ *   real widths     tabs are expanded before anything is measured: a tab counted as one
+ *                   column is how a "bounded" line ends up wider than the window.
  *
  * The status bar is deliberately drawn without DECSTBM: a scroll region left behind
  * by a terminal that died would wreck the surviving shell. It is just the last line,
  * erased before anything prints above it, so the worst a crash can leave is one
  * stale line of text.
+ *
+ * Input is a writer too -- readline echoes keystrokes and redraws its own line -- so
+ * the CLI keeps readline alive only while a prompt is on screen; see cli.ts.
  */
 
 export interface UiSettings {
@@ -36,6 +52,10 @@ export interface UiSettings {
   wrap: boolean;
   /** coalesce writes into one syscall per this many ms (0 = write immediately) */
   flushMs: number;
+  /** rewrite the status bar in place at most once per this many ms (0 = every flush) */
+  statusMs: number;
+  /** with no bar to show progress in, print one append-only line per step instead */
+  stepLines: boolean;
   /** unicode = the ⚙ ↩ ≡ tags; ascii = plain words (ambiguous-width glyphs are one
    *  of the things Terminal's detector mishandles, so ascii is the default) */
   glyphs: "ascii" | "unicode";
@@ -43,7 +63,7 @@ export interface UiSettings {
   color: boolean;
 }
 
-export const UI_DEFAULTS: UiSettings = { statusBar: true, foldTools: true, wrap: true, flushMs: 40, glyphs: "ascii", color: true };
+export const UI_DEFAULTS: UiSettings = { statusBar: true, foldTools: true, wrap: true, flushMs: 40, statusMs: 500, stepLines: false, glyphs: "ascii", color: true };
 
 export interface TurnStatus {
   title: string;
@@ -112,31 +132,61 @@ export function ellipsize(s: string, cols: number): string {
 export function wrapToWidth(s: string, cols: number): string[] {
   if (cols <= 2 || displayWidth(s) <= cols) return [s];
   const out: string[] = [];
-  let rest = s;
-  while (displayWidth(rest) > cols) {
-    const head = cutToWidth(rest, cols);
-    const sp = head.lastIndexOf(" ");
-    const cut = sp > cols * 0.5 ? sp + 1 : head.length;
-    out.push(rest.slice(0, cut).replace(/\s+$/, ""));
-    // a cut that landed on a word boundary would otherwise indent the continuation
-    rest = rest.slice(cut).replace(/^ +/, "");
+  let line = "", w = 0;
+  let spaceAt = -1, spaceCol = 0;         // the last space in `line`, and its column
+  // one pass: re-measuring the remainder on every break -- which is what this used to
+  // do -- is quadratic, and one 200KB line from a tool then freezes the whole turn
+  for (const ch of s) {
+    const cw = displayWidth(ch);
+    if (w + cw > cols) {
+      let rest: string;
+      if (spaceAt >= 0 && spaceCol > cols * 0.5) {
+        out.push(line.slice(0, spaceAt).replace(/\s+$/, ""));
+        rest = line.slice(spaceAt + 1);
+      } else { out.push(line); rest = ""; }
+      // a cut that landed on a word boundary would otherwise indent the continuation
+      rest = rest.replace(/^ +/, "");
+      line = rest; w = displayWidth(rest); spaceAt = -1; spaceCol = 0;
+      if (ch === " " && !line) continue;   // the space that broke the line, not an indent
+    }
+    if (ch === " ") { spaceAt = line.length; spaceCol = w; }
+    line += ch; w += cw;
   }
-  if (rest) out.push(rest);
+  if (line) out.push(line);
   return out;
 }
 
 /**
  * Strip what must never reach the terminal verbatim: ESC sequences and the other C0
  * controls (a model writing terminal code, a tool echoing a progress bar), and lone
- * surrogates, which `.slice()` on a JSON blob produces all by itself.
+ * surrogates, which `.slice()` on a JSON blob produces all by itself. Tabs survive as
+ * spaces, because a tab is the one character whose width we cannot otherwise honour.
  */
 export function sanitize(s: string): string {
-  return s
+  return expandTabs(s
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")        // OSC (window title, hyperlinks)
     .replace(/\u001b[@-Z\\-_]|\u001b\[[0-?]*[ -/]*[@-~]/g, "")          // CSI and the rest of ESC
     .replace(/[\u0000-\u0008\u000b-\u001f\u007f\u009b]/g, "")           // C0/C1, keeping \t and \n
     .replace(/[\ud800-\udbff](?![\udc00-\udfff])/g, "�")
-    .replace(/(^|[^\ud800-\udbff])([\udc00-\udfff])/g, "$1�");
+    .replace(/(^|[^\ud800-\udbff])([\udc00-\udfff])/g, "$1�"));
+}
+
+/**
+ * Tab stops every 8 columns, the way the terminal has them. A tab counted as one
+ * column -- which is what any width function does with it -- is how a line we believe
+ * is bounded to the window ends up twice as wide and reflows anyway, and reflow is one
+ * of the ways Terminal's detector walks off the end. Any tool that prints a
+ * tab-separated table, or reads a tab-indented file, produces them.
+ */
+export function expandTabs(s: string, stop = 8): string {
+  if (!s.includes("\t")) return s;
+  let out = "", col = 0;
+  for (const ch of s) {
+    if (ch === "\t") { const n = stop - (col % stop); out += " ".repeat(n); col += n; }
+    else if (ch === "\n") { out += ch; col = 0; }
+    else { out += ch; col += displayWidth(ch); }
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------------
@@ -165,6 +215,7 @@ export class Renderer {
   private ticker: ReturnType<typeof setInterval> | undefined;
   private statusShown = false;
   private statusDirty = false;
+  private statusAt = 0;             // when the bar was last rewritten in place
   private suspended = true;         // no status bar until a turn starts
 
   private st: TurnStatus = { ...EMPTY };
@@ -186,7 +237,17 @@ export class Renderer {
     }
   }
 
-  get width(): number { return this.widthOverride ?? (this.tty ? this.out.columns ?? 80 : 80); }
+  /**
+   * A tty with no window size reports 0 columns (a pty opened without one, `script`,
+   * some CI runners). Taken literally that makes the status bar an empty reverse-video
+   * line and, worse, turns wrapping off entirely -- cols <= 2 means "do not wrap" --
+   * so the one mitigation that matters most would be silently disabled. 80 instead.
+   */
+  get width(): number {
+    if (this.widthOverride !== undefined) return this.widthOverride;
+    const c = this.tty ? this.out.columns : undefined;
+    return c && c > 0 ? c : 80;
+  }
   setVerbose(v: boolean): void { this.verbose = v; }
   isVerbose(): boolean { return this.verbose; }
   setStatusBar(on: boolean): void { this.ui.statusBar = on; if (!on) this.hideStatus(); else { this.statusDirty = true; this.schedule(); } }
@@ -245,7 +306,10 @@ export class Renderer {
    * scrollback. Verbose means one line per call, as it used to be.
    */
   event(e: { kind: string; detail: string }): void {
-    const detail = sanitize(e.detail).replace(/\s+/g, " ").trim();
+    // a loud event carries whatever a tool or an upstream handed us -- an HTML error
+    // page, a stack trace, a whole file -- and a line is a line, so cap it here rather
+    // than let one warning turn into two thousand lines in a single write
+    const detail = ellipsize(sanitize(e.detail).replace(/\s+/g, " ").trim(), MAX_DETAIL);
     if (e.kind === "tool") {
       const name = detail.split(" ")[0] || "tool";
       this.stepTools.push(name);
@@ -277,7 +341,7 @@ export class Renderer {
   // --- turn / step lifecycle ------------------------------------------------------
 
   turnStart(s: Partial<TurnStatus>): void {
-    this.st = { ...EMPTY, ...s };
+    this.st = { ...EMPTY, ...s, ...plainFields(s) };
     this.turnStartedAt = Date.now();
     this.stepStartedAt = 0;
     this.stepTools = []; this.stepQuiet.clear();
@@ -297,11 +361,17 @@ export class Renderer {
     this.st.phase = "thinking";
     this.stepStartedAt = Date.now();
     this.stepTools = []; this.stepQuiet.clear();
+    // with no bar there is no live progress at all, and one model call can take a
+    // minute: an append-only line per step is the cheapest honest "still alive"
+    if (this.ui.stepLines && !this.suspended) {
+      const t = this.turnStartedAt ? `  ${secs(Date.now() - this.turnStartedAt)}` : "";
+      this.line(`  ${this.tag("step")} step ${step}${this.st.maxSteps ? "/" + this.st.maxSteps : ""}  ${this.st.model}  in ${k(this.st.input)} out ${k(this.st.output)}${t}`);
+    }
     this.statusDirty = true; this.schedule();
   }
 
   status(s: Partial<TurnStatus>): void {
-    Object.assign(this.st, s);
+    Object.assign(this.st, s, plainFields(s));
     this.statusDirty = true;
     this.schedule();
   }
@@ -400,13 +470,24 @@ export class Renderer {
 
   private schedule(): void {
     if (this.ui.flushMs <= 0 || !this.tty) { this.flushNow(); return; }
+    this.scheduleIn(this.ui.flushMs);
+  }
+
+  private scheduleIn(ms: number): void {
     if (this.timer) return;
-    this.timer = setTimeout(() => { this.timer = undefined; this.flushNow(); }, this.ui.flushMs);
+    this.timer = setTimeout(() => { this.timer = undefined; this.flushNow(); }, Math.max(0, ms));
     (this.timer as any).unref?.();
   }
 
   /** one write() per flush: the terminal sees one coherent chunk, not 2000 fragments */
   flushNow(): void {
+    // the bar is the only thing we ever rewrite in place, and rewriting the last line
+    // is what Terminal's timers tear themselves apart over. Text has to go out when it
+    // is ready; a bar that is merely out of date can wait for status_ms.
+    if (!this.pending && this.statusShown && this.wantStatus() && this.ui.statusMs > 0) {
+      const due = this.statusAt + this.ui.statusMs - Date.now();
+      if (due > 0) { if (this.statusDirty) this.scheduleIn(due); return; }
+    }
     if (this.timer) { clearTimeout(this.timer); this.timer = undefined; }
     const body = this.pending; this.pending = "";
     const redraw = this.wantStatus() && (this.statusDirty || !!body || !this.statusShown);
@@ -414,10 +495,25 @@ export class Renderer {
     let s = "";
     if (this.statusShown && (body || redraw || !this.wantStatus())) { s += "\r\u001b[2K"; this.statusShown = false; }
     s += body;
-    if (this.wantStatus()) { s += this.statusText(); this.statusShown = true; this.statusDirty = false; }
+    if (this.wantStatus()) { s += this.statusText(); this.statusShown = true; this.statusDirty = false; this.statusAt = Date.now(); }
     if (s) this.out.write(s);
   }
 }
+
+/**
+ * The bar's own text is the one place where something a user or a config file wrote
+ * reaches the terminal without going through line(): a task title is the user's first
+ * line, so it gets the same treatment as everything else before it is measured.
+ */
+function plainFields(s: Partial<TurnStatus>): Partial<TurnStatus> {
+  const out: Partial<TurnStatus> = {};
+  if (s.title !== undefined) out.title = sanitize(s.title).replace(/\s+/g, " ").trim();
+  if (s.model !== undefined) out.model = sanitize(s.model).replace(/\s+/g, " ").trim();
+  return out;
+}
+
+/** columns of a single event line before it is cut: ~8 wrapped lines at 120 columns */
+const MAX_DETAIL = 1000;
 
 function countsOf(names: string[]): string {
   const c = new Map<string, number>();

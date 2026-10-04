@@ -91,7 +91,10 @@ that failed, non-obvious code facts linked to their file — with the user's own
 for every constraint. It is written by rules ("记住…", "不要…", "always…"), by the model
 (`remember`), and by a small model at turn end; recalled in three layers (always-on, an index,
 details on demand). A recall that misses is visible: the model can search, and the ledger
-counts it. A new session starts with what the last one decided.
+counts it. A new session starts with what the last one decided. If you also use Codex CLI, its
+memory (`~/.codex/memories`: months of task groups and session summaries) is searchable too,
+read-only: a message that clearly matches past Codex work gets a few pointers in the briefing,
+and `codex_memory(query | ref)` reads the rest.
 
 **3. Fold, never delete — and always leave a way back.**
 Every folded tool output becomes a one-line stub with an id; the real bytes go to an artifact
@@ -329,15 +332,18 @@ In `chat`:
 | `/verbose` · `/status` | one line per tool call instead of one per step; turn the bottom status bar on or off |
 
 Tools: `read`, `write_file`, `edit`, `multi_edit`, `ls`, `grep`, `run` / `wait` (blocking, no
-polling), `recall`, `delegate`, `memory_search` / `memory_get` / `remember`, `skill`. Skills are
+polling), `recall`, `delegate`, `memory_search` / `memory_get` / `remember`, `codex_memory`, `skill`. Skills are
 `SKILL.md` folders found in the project (`.agents/skills`, `.claude/skills`, `.codex/skills`) and
 in `~/.mph/skills`, `~/.claude/skills`, `~/.codex/skills` — existing ones work unchanged; external
 capabilities are CLIs the skills document, run with `run`. Memory can be switched off:
-`mph config memory_recall=off` (stop using it) or `memory_write=off` (stop recording).
+`mph config memory_recall=off` (stop using it) or `memory_write=off` (stop recording);
+`memory_codex=off` stops reading Codex's memory (`mph memory codex QUERY` searches it by hand).
 There is no command approval or sandbox: commands run with your permissions.
 
 What a turn looks like: tool calls are folded to one line per step, and the bottom line
-keeps the task title, the token spend, the elapsed time and the last model latency.
+keeps the task title, the token spend, the elapsed time and the last model latency. In
+Apple Terminal there is no bottom line (see below) and each step announces itself in the
+scrollback instead.
 
 ```
   ? rebuild (rule: nothing to carry)
@@ -351,19 +357,45 @@ keeps the task title, the token spend, the elapsed time and the last model laten
 `/verbose` (or `--verbose`) expands the fold back to one line per call with its arguments.
 
 **If your terminal dies mid-turn, it is probably not mph.** Apple Terminal 2.14 on
-macOS 14.7.1 crashes a few seconds into a streaming turn: its timer-driven link detector
-walks the scrollback as an `NSAttributedString` (`__NSFireTimer` →
-`-[NSAttributedString URLAtIndex:effectiveRange:]` → `CFStringFindCharacterFromSet` →
-`_platform_memmove`, SIGSEGV at 0) and takes mph with it, mid-turn. Terminal is not ours
-to fix, so `src/harness/render.ts` stops handing it the input it chokes on: one writer
-instead of answer-on-stdout and events-on-stderr, whole lines instead of per-token
-writes, every line hard-wrapped to the window so nothing can be reflowed, writes
-coalesced into one syscall per `ui_flush_ms`, and ESC and the other C0 controls stripped
-from anything a model or a tool produced. If it still happens, `mph config
-ui_status_bar=off` (or `--plain`) leaves the terminal with nothing to redraw at all.
+macOS 14.7.1 crashes while mph streams, and it has done it with three different
+signatures — all of them its own heap or its own locks coming apart while its timers
+walk a scrollback that is still being written:
+
+```
+__NSFireTimer → -[NSAttributedString URLAtIndex:effectiveRange:] →
+  CFStringFindCharacterFromSet → _platform_memmove        SIGSEGV at 0
+tiny_malloc_from_free_list → free_list_checksum_botch → abort
+-[_NSTrackingAreaAKViewHelper _recursiveSetTrackingAreasDirty:] → -[NSView subviews] →
+  _cow_copy → os_unfair_lock_corruption_abort             "os_unfair_lock is corrupt"
+```
+
+`~/Library/Logs/DiagnosticReports/Terminal-*.ips` is where you recognise it. Terminal is
+not ours to fix, so `src/harness/render.ts` stops handing it the input it chokes on:
+
+- **one writer.** Events and the answer share one fd; two fds on one pty interleave
+  inside a half-written line. Input counts too — readline echoes keystrokes itself, so
+  it only exists while a prompt is on screen, and during a turn stdin is read raw with
+  nothing echoed and only `^C` acted on.
+- **whole lines**, buffered, instead of a per-token rewrite of the last one.
+- **bounded lines.** Every line is hard-wrapped to the window, tabs expanded first
+  (a tab measured as one column is how a "bounded" line ends up twice as wide and
+  reflows anyway), and a tty that reports no window size is treated as 80 columns.
+- **one `write()`** per `ui_flush_ms`, so the text storage mutates ~8–25× a second
+  instead of ~2000×.
+- **slow rewrites.** The status bar is the only thing rewritten in place, and it is
+  rewritten at most once per `ui_status_ms` — a turn that used to rewrite the bottom
+  line a few thousand times now does it a few dozen.
+- **no rewrites at all in Apple Terminal**, which is the one terminal we know dies: the
+  bar is off there by default, so what it gets is append-only text with no control
+  sequences in it, and progress goes in the scrollback (`* step 3/24 …`) instead.
+- **no escapes in.** ESC and the other C0 controls are stripped from anything a model or
+  a tool produced, long event details are cut, and lone surrogates become `�`.
 
 ```bash
-mph config ui_status_bar=off     # no bottom status line
+mph config ui_status_bar=on      # bring the bottom line back in Apple Terminal
+mph config ui_status_bar=off     # no bottom status line (the default there)
+mph config ui_status_ms=1000     # rewrite that line at most once a second
+mph config ui_step_lines=on      # one append-only progress line per step
 mph config ui_fold_tools=off     # one line per tool call, always
 mph config ui_glyphs=unicode     # ⚙ ↩ ≡ instead of the ascii tags
 mph config ui_flush_ms=0         # write every update immediately (noisier, more syscalls)
@@ -372,10 +404,10 @@ mph config ui_color=off          # no reverse video on the status line
 ```
 
 `MPH_UI_STATUS_BAR`, `MPH_UI_FOLD_TOOLS`, `MPH_UI_WRAP`, `MPH_UI_FLUSH_MS`,
-`MPH_UI_GLYPHS` and `MPH_UI_COLOR` override the file; `NO_COLOR` and `TERM=dumb` are
-honoured; `--plain` turns the whole lot off for one command. None of it applies to
-`--json`, which writes its own newline-delimited wire format and never touches the
-renderer.
+`MPH_UI_STATUS_MS`, `MPH_UI_STEP_LINES`, `MPH_UI_GLYPHS` and `MPH_UI_COLOR` override the
+file; `NO_COLOR` and `TERM=dumb` are honoured; `--plain` turns the whole lot off for one
+command. None of it applies to `--json`, which writes its own newline-delimited wire
+format and never touches the renderer.
 
 ### 5. Watch what it is doing
 

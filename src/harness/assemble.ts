@@ -27,13 +27,13 @@ Rules:
 - run(cmd) blocks until the command exits. Never poll: for long processes use run(background=true) then wait(job, until=regex|silence).
 - Use read/grep/ls for code, edit/multi_edit/write_file for changes. Put every independent call in ONE response: several reads, greps, or several run() commands at once. Wait for a result only when the next call actually needs it.
 - Do not re-read files you have not changed. Keep tool output small: line ranges, grep limits, test commands that print failures only.
-- Memory: memory_search(query) and memory_get(ids) look things up. remember(type, title, body, links, quote) saves what future turns or sessions need and the code does not show: a decision and why, a constraint or preference (quote the user's exact words), an approach that failed and why, a non-obvious code fact (link the file), an open question, a procedure. Do not save trivia.
+- Memory: memory_search(query) and memory_get(ids) look things up; codex_memory(query) searches the user's Codex CLI history too (read it with codex_memory(ref)), useful when a task touches earlier work. remember(type, title, body, links, quote) saves what future turns or sessions need and the code does not show: a decision and why, a constraint or preference (quote the user's exact words), an approach that failed and why, a non-obvious code fact (link the file), an open question, a procedure. Do not save trivia.
 - Skills: when a listed skill covers the task, load it with skill(name) and follow it.
 - Prefer delegate(task, inputs, acceptance) for bounded, self-contained subtasks.
 - Do not send commentary-only responses; every response either calls tools or gives the final answer.
 - Final answer: lead with the outcome in one or two sentences, then name files changed, what was verified and what was not, and open items.`;
 
-export interface BriefingParts { workspace?: string; merged?: string; memory?: string; skills?: string; gate?: string; userTextWarning?: string }
+export interface BriefingParts { workspace?: string; merged?: string; memory?: string; codexMemory?: string; skills?: string; gate?: string; userTextWarning?: string }
 
 export function renderBriefing(p: BriefingParts): string {
   const blocks = ["[turn briefing — context for the next user message, not written by the user]"];
@@ -41,6 +41,7 @@ export function renderBriefing(p: BriefingParts): string {
   if (p.workspace) blocks.push(p.workspace);
   if (p.merged) blocks.push(p.merged);
   if (p.memory) blocks.push(p.memory);
+  if (p.codexMemory) blocks.push(p.codexMemory);
   if (p.skills) blocks.push(p.skills);
   if (p.userTextWarning) blocks.push(p.userTextWarning);
   return blocks.join("\n\n");

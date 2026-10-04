@@ -13,9 +13,10 @@ import { Router } from "./router.js";
 import { initTokenizer } from "../core/tokens.js";
 import { runLogin, printWhoami, runLogout } from "../upstream/login_cli.js";
 import { loadConfigFile, configPath, resolveUpstream, describeUpstream } from "../upstream/index.js";
-import { resolveModels, memorySettings, setConfigValues, maskConfig } from "../upstream/config.js";
+import { resolveModels, memorySettings, setConfigValues, maskConfig, appleTerminal } from "../upstream/config.js";
 import { MemoryStore, MEMORY_TYPES, type MemoryType } from "../memory/store.js";
 import { detailBlock, l1Line } from "../memory/recall.js";
+import { codexHitLine, codexMemoryRoots, loadCodexMemory, readCodexMemory, searchCodexMemory } from "../memory/codex.js";
 import { discoverSkills, loadSkillBody, skillLine } from "../skills/index.js";
 import { projectOf } from "../memory/store.js";
 import type { GateAction } from "./gate.js";
@@ -127,6 +128,8 @@ Usage:
   mph memory list [--all] [--type TYPE]
   mph memory search QUERY
   mph memory get ID | pin ID | unpin ID | forget ID
+  mph memory codex QUERY              search Codex CLI's memory (~/.codex/memories, read-only)
+  mph memory codex --read REF         print one Codex memory entry
   mph memory export [FILE] | import FILE | gc`,
   knobs: `mph knobs — inspect or change token-saving thresholds
 
@@ -227,38 +230,111 @@ function renderer(): Renderer {
 
 function printEvent(e: { kind: string; detail: string }) { renderer().event(e); }
 
-async function chat(session: SessionData, startInVibe = false) {
-  const render = renderer();
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  /**
-   * ^C used to close the readline interface -- with no SIGINT listener that is what
-   * node does -- and the chat then had no prompt and no way back. Now the first ^C
-   * clears the line and says so, and a second one within two seconds quits.
-   */
-  let lastSigint = 0;
-  rl.on("SIGINT", () => {
-    const now = Date.now();
-    if (now - lastSigint < 2000) { render.close(); rl.close(); process.exit(130); }
-    lastSigint = now;
-    render.suspend();
-    process.stdout.write("\n  (^C again to quit, or /quit)\n");
-    rl.prompt(true);
-  });
-  let inputClosed = false;
-  rl.once("close", () => { inputClosed = true; });
-  const ask = (q: string) => new Promise<string>((resolveAnswer) => {
+/**
+ * ^C: the first one says so, a second one within two seconds quits. It is handled at
+ * the prompt by readline and during a turn by the keystroke guard below, so it means
+ * the same thing in both places.
+ */
+let lastSigint = 0;
+function sigintAgain(): boolean {
+  const now = Date.now();
+  const again = now - lastSigint < 2000;
+  lastSigint = now;
+  return again;
+}
+
+/**
+ * Readline is a writer too: in terminal mode it echoes every keystroke itself and
+ * redraws its own line. A key pressed while a turn is streaming therefore puts a second
+ * writer on the pty, inside a half-written line -- exactly the interleaving that kills
+ * Apple Terminal (src/harness/render.ts). So readline exists only while a prompt is on
+ * screen: one interface per prompt, closed as soon as the line is in. The history
+ * array is carried across them by hand, since that is where readline keeps it.
+ */
+let promptHistory: string[] = [];
+/**
+ * Piped stdin keeps the old single interface: there is no echo to worry about when
+ * nobody is typing, and a second interface on a non-tty stream would lose whatever the
+ * first one had already read ahead.
+ */
+let pipedRl: ReturnType<typeof createInterface> | undefined;
+
+function askLine(render: Renderer, prompt: string): Promise<{ text: string; closed: boolean }> {
+  if (!process.stdin.isTTY) {
+    const rl = (pipedRl ??= createInterface({ input: process.stdin, output: process.stdout }));
+    return new Promise((done) => {
+      let settled = false;
+      const finish = (text: string, closed: boolean) => { if (settled) return; settled = true; rl.off("close", onClose); done({ text, closed }); };
+      const onClose = () => finish("", true);
+      rl.once("close", onClose);
+      rl.question(prompt, (a) => finish(a, false));
+    });
+  }
+  return new Promise((done) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout, historySize: 200 });
+    (rl as unknown as { history: string[] }).history = promptHistory;
     let settled = false;
-    const finish = (answer: string) => {
+    const finish = (text: string, closed: boolean) => {
       if (settled) return;
       settled = true;
-      rl.off("close", onClose);
-      resolveAnswer(answer);
+      promptHistory = (rl as unknown as { history?: string[] }).history ?? promptHistory;
+      rl.close();
+      done({ text, closed });
     };
-    const onClose = () => finish("");
-    rl.once("close", onClose);
-    rl.question(q, finish);
+    rl.on("SIGINT", () => {
+      if (sigintAgain()) { render.close(); rl.close(); process.exit(130); }
+      render.line("\n  (^C again to quit, or /quit)");
+      render.flushNow();
+      rl.prompt(true);
+    });
+    rl.once("close", () => finish("", true));
+    rl.question(prompt, (a) => finish(a, false));
   });
+}
+
+/**
+ * stdin while a turn runs: raw, so the tty driver echoes nothing, and read by us so
+ * that ^C still means something. Every other keystroke is dropped on purpose -- it
+ * would otherwise either echo into the middle of the output or arrive at the next
+ * prompt as text the user typed minutes ago.
+ */
+function guardKeystrokes(render: Renderer): () => void {
+  const stdin = process.stdin;
+  if (!stdin.isTTY) return () => {};
+  const onData = (b: Buffer) => {
+    if (!b.includes(0x03)) return;                       // ^C
+    if (sigintAgain()) { render.close(); restore(); process.exit(130); }
+    render.line("  (^C again to quit)");
+    render.flushNow();
+  };
+  let restored = false;
+  const restore = () => {
+    if (restored) return;
+    restored = true;
+    stdin.off("data", onData);
+    stdin.pause();
+    try { stdin.setRawMode(false); } catch { /* not a tty any more */ }
+    process.off("exit", restore);
+  };
+  stdin.setRawMode(true);
+  stdin.on("data", onData);
+  stdin.resume();
+  process.once("exit", restore);
+  return restore;
+}
+
+async function chat(session: SessionData, startInVibe = false) {
+  const render = renderer();
+  let inputClosed = false;
+  const ask = async (q: string) => {
+    const r = await askLine(render, q);
+    if (r.closed) inputClosed = true;
+    return r.text;
+  };
   console.log(`session ${session.id} (${session.title}) in ${session.cwd}. /help for commands.`);
+  if (process.stdout.isTTY && appleTerminal() && !render.ui.statusBar) {
+    console.log("  (Apple Terminal: status bar off and writes slowed, because 2.14 crashes when a line is rewritten under it — `mph config ui_status_bar=on` to override)");
+  }
   let pendingGate: GateAction | undefined;
   let vibe = startInVibe;
   if (vibe) console.log(VIBE_BANNER);
@@ -325,6 +401,7 @@ async function chat(session: SessionData, startInVibe = false) {
     const ledger = new Ledger(); const store = new ArtifactStore(); const router = new Router(knobs, ledger);
     const strat = vibe ? strategyFor("react") : strategyFor(knobs.strategy);
     const onText = (t: string) => render.text(t);
+    const unguard = guardKeystrokes(render);
     let r;
     try {
       r = vibe
@@ -334,13 +411,13 @@ async function chat(session: SessionData, startInVibe = false) {
         // a strategy runs many nested turns; it reports through events and its own
         // final text rather than fighting over one status bar
         : await strat.run({ session, userText: text, knobs, store, ledger, router, onEvent: printEvent });
-    } finally { render.endText(); }
+    } finally { unguard(); render.endText(); }
     if (!vibe && strat.name !== "react") render.line(r.text);
     pendingGate = undefined;
     render.turnEnd(turnSummary(r));
   }
   render.close();
-  rl.close();
+  pipedRl?.close();
 }
 
 /** the status bar and the prompt want the task, not the session's own id */
@@ -403,7 +480,7 @@ async function main() {
     const m = resolveModels(knobsFor({ project: cwd }));
     console.log(`models: main ${m.main} (${m.source.main}) · mid ${m.mid} (${m.source.mid}) · small ${m.small} (${m.source.small})`);
     const ms = memorySettings();
-    console.log(`memory (global): recall ${ms.recall ? "on" : "off"} · write ${ms.write ? "on" : "off"}`);
+    console.log(`memory (global): recall ${ms.recall ? "on" : "off"} · write ${ms.write ? "on" : "off"} · codex ${ms.codex ? "on" : "off"}`);
     return;
   }
   if (cmd === "memory") { memoryCommand(args.slice(1), false); return; }
@@ -533,13 +610,22 @@ async function main() {
 function memoryCommand(argv: string[], inChat: boolean): void {
   const sub = argv[0] ?? "list";
   const ms = memorySettings();
+  if (sub === "codex") {
+    const roots = codexMemoryRoots();
+    if (!roots.length) { console.log("no Codex memory found (~/.codex/memories)"); return; }
+    if (argv[1] === "--read") { console.log(readCodexMemory(argv[2] ?? "", { max: 200_000 }) ?? `no ref ${argv[2] ?? ""}`); return; }
+    const q = argv.slice(1).join(" ");
+    if (!q) { console.log(`codex memory: ${loadCodexMemory(roots).length} entries in ${roots.join(", ")} (${ms.codex ? "on" : "off"} in sessions)`); return; }
+    for (const h of searchCodexMemory(q, { project: projectOf(process.cwd()), limit: 15 })) console.log(`${h.score.toFixed(2)} ${codexHitLine(h)}\n       ${h.snippet}`);
+    return;
+  }
   let store: MemoryStore;
   try { store = new MemoryStore(); } catch (e: any) { console.log(`memory store unavailable: ${e?.message ?? e}`); return; }
   try {
     if (sub === "list") {
       const type = argv.includes("--type") ? argv[argv.indexOf("--type") + 1] as MemoryType : undefined;
       const rows = store.list({ status: argv.includes("--all") ? "all" : "active", type, limit: 200 });
-      console.log(`memory: ${store.count()} active (recall ${ms.recall ? "on" : "off"}, write ${ms.write ? "on" : "off"})`);
+      console.log(`memory: ${store.count()} active (recall ${ms.recall ? "on" : "off"}, write ${ms.write ? "on" : "off"}, codex ${ms.codex ? "on" : "off"})`);
       for (const e of rows) console.log(`${e.pinned ? "*" : " "} ${l1Line(e)}${e.status !== "active" ? `  [${e.status}]` : ""}`);
       return;
     }

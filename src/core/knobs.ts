@@ -61,6 +61,7 @@ export const KNOB_SPECS = {
   memory_l0_budget: { default: 800, min: 0, max: 4000, step: 100, description: "pinned memory tokens per turn" } as KnobSpec<number>,
   memory_l1_max: { default: 12, min: 0, max: 40, step: 1, description: "memory index lines per turn" } as KnobSpec<number>,
   memory_candidates: { default: 40, min: 5, max: 120, step: 5, description: "candidates handed to the small model for reranking" } as KnobSpec<number>,
+  codex_memory_hints: { default: 3, min: 0, max: 10, step: 1, description: "Codex-memory lines in the turn briefing (0 = search only on demand)" } as KnobSpec<number>,
   memory_extract: { default: true, description: "at turn end, let the small model extract typed memories" } as KnobSpec<boolean>,
   answer_card_model: { default: false, description: "always use the small model for answer cards (default: rules first, model as fallback)" } as KnobSpec<boolean>,
   skill_index_budget: { default: 1500, min: 200, max: 8000, step: 100, description: "tokens of the skill index in the static prefix" } as KnobSpec<number>,

@@ -1,7 +1,7 @@
 /**
  * Tools added for multi-turn sessions (docs/MEMORY_DESIGN.md §6), registered next to
  * the core tools in tools.ts: multi_edit, ls, grep, memory_search, memory_get, remember,
- * skill. Each tool is a definition plus a handler; tools.ts dispatches unknown names here.
+ * codex_memory, skill. Each tool is a definition plus a handler; tools.ts dispatches unknown names here.
  */
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
@@ -11,6 +11,7 @@ import type { ToolContext } from "./tools.js";
 import { MEMORY_TYPES, type MemoryStore, type MemoryType } from "../memory/store.js";
 import { detailBlock, l1Line } from "../memory/recall.js";
 import { addUnlessDuplicate, normalizeLinks } from "../memory/write.js";
+import { codexHitLine, codexMemoryRoots, readCodexMemory, searchCodexMemory } from "../memory/codex.js";
 import { loadSkillBody, onPath, type Skill } from "../skills/index.js";
 import { VIBE_TOOLS } from "./vibe.js";
 
@@ -19,6 +20,8 @@ export interface MemoryToolContext {
   memory?: MemoryStore;
   memoryRecall: boolean;
   memoryWrite: boolean;
+  /** search Codex CLI's memory too (read-only) */
+  codexMemory: boolean;
   /** ids the model was shown this turn (pinned, index, detail) — a get outside it is a recall miss */
   memoryShown: Set<string>;
   memoryUsed: Set<string>;
@@ -197,6 +200,20 @@ export const EXTRA_TOOLS: RegisteredTool[] = [
       const r = addUnlessDuplicate(ctx.memory, { type, title: String(args.title ?? "").slice(0, 160), body: String(args.body ?? ""), links: normalizeLinks(args.links, ctx.cwd), quote: args.quote ? String(args.quote) : undefined, project: ctx.project ?? ctx.cwd, source: { session: ctx.sessionId, turn: ctx.turn ?? 0, by: "model" }, pinned: type === "goal" || type === "constraint" });
       ctx.remembered?.push(r.entry.id);
       return r.created ? `[remembered ${r.entry.id}]` : `[already known as ${r.entry.id}]`;
+    },
+  },
+  {
+    multiTurnOnly: true,
+    def: { name: "codex_memory", description: "Search or read Codex CLI's long-term memory (~/.codex/memories, read-only): months of past Codex sessions across the user's projects -- what was done, decisions, failures, preferences, paths, hosts. Search with query (mostly English notes: include English keywords, project names, paths); read one hit in full with ref. Treat it as point-in-time history: re-check live state before relying on it.", parameters: { type: "object", properties: { query: { type: "string" }, ref: { type: "string", description: "a ref from a search hit, e.g. memories/MEMORY.md#3 or rollout_summaries/<file>.md" }, offset: { type: "number", description: "char offset when reading a long ref" } } } },
+    handler: (ctx, args) => {
+      if (!ctx.codexMemory) return "[codex_memory] Codex memory is turned off in settings (mph config memory_codex=on)";
+      if (!codexMemoryRoots().length) return "[codex_memory] no Codex memory found (~/.codex/memories)";
+      if (args.ref) return readCodexMemory(String(args.ref), { offset: Number(args.offset) || 0 }) ?? `[codex_memory] no ref "${args.ref}"; search first and use a ref it prints`;
+      const q = String(args.query ?? "").trim();
+      if (!q) return "[codex_memory] give a query or a ref";
+      const hits = searchCodexMemory(q, { project: ctx.project, limit: 8 });
+      if (!hits.length) return `[codex_memory] nothing for "${q}" (the notes are mostly English; try English keywords or a project path)`;
+      return `[codex_memory "${q}" · codex_memory(ref=...) reads one]\n` + hits.map((h) => `${codexHitLine(h)}\n    ${h.snippet}`).join("\n");
     },
   },
   {

@@ -34,10 +34,10 @@ export interface UpstreamConfigFile {
   mid_model?: string;
   small_model?: string;
   /** memory is global (shared by every project); recall=false stops injecting and searching it, write=false stops recording */
-  memory?: { recall?: boolean; write?: boolean };
+  memory?: { recall?: boolean; write?: boolean; codex?: boolean };
   /** terminal output: status bar, folded tool calls, and the write discipline that
    *  keeps Apple Terminal alive (see src/harness/render.ts) */
-  ui?: { status_bar?: boolean; fold_tools?: boolean; wrap?: boolean; flush_ms?: number; glyphs?: "ascii" | "unicode"; color?: boolean };
+  ui?: { status_bar?: boolean; fold_tools?: boolean; wrap?: boolean; flush_ms?: number; status_ms?: number; step_lines?: boolean; glyphs?: "ascii" | "unicode"; color?: boolean };
 }
 
 export interface ResolvedUpstream {
@@ -134,35 +134,59 @@ export function resolveModels(knobs: { main_model?: string; mid_model?: string; 
   return { main, mid, small, source: src };
 }
 
-export interface MemorySettings { recall: boolean; write: boolean }
+/** codex: also search Codex CLI's own memory (~/.codex/memories*), read-only; absent = off */
+export interface MemorySettings { recall: boolean; write: boolean; codex?: boolean }
 
-/** global memory switches: config.json `memory`, overridable with MPH_MEMORY_RECALL / MPH_MEMORY_WRITE = 0|1 */
+/** global memory switches: config.json `memory`, overridable with MPH_MEMORY_RECALL / MPH_MEMORY_WRITE / MPH_MEMORY_CODEX = 0|1 */
 export function memorySettings(env: NodeJS.ProcessEnv = process.env): MemorySettings {
   const m = loadConfigFile().memory ?? {};
   const flag = (v: string | undefined, d: boolean) => v === undefined ? d : !["0", "false", "off", "no"].includes(v.toLowerCase());
-  return { recall: flag(mphEnv("MEMORY_RECALL", env), m.recall !== false), write: flag(mphEnv("MEMORY_WRITE", env), m.write !== false) };
+  return { recall: flag(mphEnv("MEMORY_RECALL", env), m.recall !== false), write: flag(mphEnv("MEMORY_WRITE", env), m.write !== false), codex: flag(mphEnv("MEMORY_CODEX", env), m.codex !== false) };
+}
+
+/**
+ * Apple Terminal 2.14 crashes while mph streams -- three signatures so far, all of them
+ * its own heap or its own locks coming apart while its timers walk a scrollback that is
+ * still being mutated (see src/harness/render.ts). It is the one terminal we know dies,
+ * so it gets the safest profile we have by default: no status bar, which means no line
+ * is ever rewritten in place and the output is append-only text with no control
+ * sequences at all, and a slower flush. `mph config ui_status_bar=on` overrides it.
+ */
+export function appleTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TERM_PROGRAM === "Apple_Terminal";
 }
 
 /**
  * Terminal output settings: config.json `ui`, each overridable with
  * MPH_UI_STATUS_BAR / MPH_UI_FOLD_TOOLS / MPH_UI_WRAP / MPH_UI_FLUSH_MS /
- * MPH_UI_GLYPHS / MPH_UI_COLOR. NO_COLOR and TERM=dumb are honoured.
+ * MPH_UI_STATUS_MS / MPH_UI_STEP_LINES / MPH_UI_GLYPHS / MPH_UI_COLOR. NO_COLOR and
+ * TERM=dumb are honoured, and Apple Terminal gets the append-only profile.
  */
 export function uiSettings(env: NodeJS.ProcessEnv = process.env): UiSettings {
   const u = loadConfigFile().ui ?? {};
   const dumb = env.TERM === "dumb";
+  const apple = appleTerminal(env);
   const bool = (name: string, cfg: boolean | undefined, d: boolean) => {
     const v = mphEnv(name, env);
     if (v !== undefined) return !BOOL_OFF.includes(v.toLowerCase());
     return cfg ?? d;
   };
-  const flushEnv = Number(mphEnv("UI_FLUSH_MS", env));
+  const num = (name: string, cfg: number | undefined, d: number, max: number) => {
+    const v = mphEnv(name, env);
+    const n = Number(v);
+    if (v !== undefined && Number.isFinite(n)) return Math.max(0, Math.min(max, n));
+    return Math.max(0, Math.min(max, cfg ?? d));
+  };
   const glyphs = (mphEnv("UI_GLYPHS", env) ?? u.glyphs) === "unicode" && !dumb ? "unicode" : "ascii";
+  const statusBar = bool("UI_STATUS_BAR", u.status_bar, !dumb && !apple);
   return {
-    statusBar: bool("UI_STATUS_BAR", u.status_bar, !dumb),
+    statusBar,
     foldTools: bool("UI_FOLD_TOOLS", u.fold_tools, true),
     wrap: bool("UI_WRAP", u.wrap, true),
-    flushMs: Number.isFinite(flushEnv) && mphEnv("UI_FLUSH_MS", env) !== undefined ? Math.max(0, Math.min(500, flushEnv)) : Math.max(0, Math.min(500, u.flush_ms ?? UI_DEFAULTS.flushMs)),
+    flushMs: num("UI_FLUSH_MS", u.flush_ms, apple ? 120 : UI_DEFAULTS.flushMs, 500),
+    statusMs: num("UI_STATUS_MS", u.status_ms, apple ? 1000 : UI_DEFAULTS.statusMs, 5000),
+    // no bar to put the progress in, so it goes in the scrollback instead
+    stepLines: bool("UI_STEP_LINES", u.step_lines, !statusBar && !dumb),
     glyphs,
     color: bool("UI_COLOR", u.color, !env.NO_COLOR && !dumb),
   };
@@ -181,10 +205,13 @@ export const CONFIG_KEYS: Record<string, string> = {
   small_model: "model for the gate, memory extraction and answer cards (empty = auto)",
   memory_recall: "on | off — inject and search long-term memory",
   memory_write: "on | off — record new memory entries",
+  memory_codex: "on | off — also search Codex CLI's memory (~/.codex/memories), read-only",
   ui_status_bar: "on | off — bottom status line (task title, tokens, latency)",
   ui_fold_tools: "on | off — collapse a step's tool calls into one line",
   ui_wrap: "on | off — hard-wrap output at the window width (keep on: long lines crash Apple Terminal)",
   ui_flush_ms: "0-500 — coalesce terminal writes into one syscall per N ms (0 = every write)",
+  ui_status_ms: "0-5000 — rewrite the status bar in place at most once per N ms (Apple Terminal: 1000)",
+  ui_step_lines: "on | off — one append-only progress line per step (default: on when the bar is off)",
   ui_glyphs: "ascii | unicode — event tags; ascii avoids ambiguous-width glyphs",
   ui_color: "on | off — reverse video on the status line",
 };
@@ -214,17 +241,18 @@ export function setConfigValues(entries: [string, string][]): { changed: Record<
     else if (k === "codex_base_url") cfg.codex = { ...(cfg.codex ?? {}), base_url: v || undefined };
     else if (k === "codex_models") cfg.codex = { ...(cfg.codex ?? {}), models: v.split(",").map((m) => m.trim()).filter(Boolean) };
     else if (k === "main_model" || k === "mid_model" || k === "small_model") cfg[k] = v || undefined;
-    else if (k === "memory_recall" || k === "memory_write") {
+    else if (k === "memory_recall" || k === "memory_write" || k === "memory_codex") {
       const on = BOOL_ON.includes(v.toLowerCase());
       if (!on && !BOOL_OFF.includes(v.toLowerCase())) throw new Error(`${k} must be on or off`);
-      cfg.memory = { ...(cfg.memory ?? {}), [k === "memory_recall" ? "recall" : "write"]: on };
+      cfg.memory = { ...(cfg.memory ?? {}), [k.slice("memory_".length)]: on };
     }
     else if (k === "ui_glyphs") { if (v && v !== "ascii" && v !== "unicode") throw new Error("ui_glyphs must be ascii or unicode"); cfg.ui = { ...(cfg.ui ?? {}), glyphs: (v || undefined) as "ascii" | "unicode" | undefined }; }
     else if (k === "ui_flush_ms") { const n = Number(v); if (!Number.isFinite(n) || n < 0 || n > 500) throw new Error("ui_flush_ms must be 0-500"); cfg.ui = { ...(cfg.ui ?? {}), flush_ms: n }; }
+    else if (k === "ui_status_ms") { const n = Number(v); if (!Number.isFinite(n) || n < 0 || n > 5000) throw new Error("ui_status_ms must be 0-5000"); cfg.ui = { ...(cfg.ui ?? {}), status_ms: n }; }
     else if (k.startsWith("ui_")) {
       const on = BOOL_ON.includes(v.toLowerCase());
       if (!on && !BOOL_OFF.includes(v.toLowerCase())) throw new Error(`${k} must be on or off`);
-      const field = { ui_status_bar: "status_bar", ui_fold_tools: "fold_tools", ui_wrap: "wrap", ui_color: "color" }[k];
+      const field = { ui_status_bar: "status_bar", ui_fold_tools: "fold_tools", ui_wrap: "wrap", ui_color: "color", ui_step_lines: "step_lines" }[k];
       if (!field) throw new Error(`unknown config key ${k}; valid keys: ${Object.keys(CONFIG_KEYS).join(", ")}`);
       cfg.ui = { ...(cfg.ui ?? {}), [field]: on };
     }
